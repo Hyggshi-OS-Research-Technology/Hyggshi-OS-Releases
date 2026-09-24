@@ -1,0 +1,13 @@
+{
+  "version": "1.4.1",
+  "codename": "Verdant Valley",
+  "release_date": "2026-09-24",
+  "min_supported_version": "1.4.0",
+  "changelog": [
+    "Next-generation Hyggshi OS foundation initialization",
+    "Integration with Hyggshi APT repository base packages",
+    "Standardized desktop environment and system service manager"
+  ],
+  "requires_reboot": true,
+  "migrations": []
+}

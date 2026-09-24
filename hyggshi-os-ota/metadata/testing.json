@@ -1,0 +1,10 @@
+{
+  "channel": "testing",
+  "latest_version": "1.6.0-nightly",
+  "min_supported_version": "1.5.0",
+  "release_date": "2026-09-24",
+  "mandatory": false,
+  "release_url": "releases/1.6.0-nightly/release.json",
+  "announcement": "Hyggshi OS 1.6.0 is a testing version of Hyggshi OS 1.6.0.",
+  "warning": "Testing channel may contain untested bugs. Please back up your data before upgrading."
+}

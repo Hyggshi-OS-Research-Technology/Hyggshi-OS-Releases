@@ -1,0 +1,10 @@
+{
+  "channel": "beta",
+  "latest_version": "1.7.0-beta.1",
+  "min_supported_version": "1.5.0",
+  "release_date": "2026-09-24",
+  "mandatory": false,
+  "release_url": "releases/1.7.0-beta.1/release.json",
+  "announcement": "Beta channel previewing upcoming features and improvements for Hyggshi OS 1.7.0.",
+  "warning": "Beta channel builds may contain experimental features. Please back up important data before upgrading."
+}

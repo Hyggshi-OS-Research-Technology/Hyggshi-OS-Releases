@@ -1,0 +1,449 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# Hyggshi OS OTA Client Tool
+# Manages and executes operating system Over-The-Air (OTA) updates
+# ==============================================================================
+set -euo pipefail
+
+VERSION="1.4.10"
+CONFIG_FILE="/etc/hyggshi-ota.conf"
+RELEASE_FILE="/etc/hyggshi-release"
+LOCAL_RUN_DIR="/tmp/hyggshi-ota-run"
+
+# ANSI Terminal Colors
+BOLD='\033[1m'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Default settings
+DEFAULT_REPO_URL="https://raw.githubusercontent.com/Hyggshi-OS-Research-Technology/Hyggshi-OS-Releases/main/hyggshi-os-ota"
+DEFAULT_CHANNEL="stable"
+DEFAULT_LOG_FILE="/var/log/hyggshi-ota.log"
+
+# Load config if present
+if [ -f "$CONFIG_FILE" ]; then
+    # shellcheck disable=SC1090
+    source "$CONFIG_FILE"
+fi
+
+OTA_REPO_URL="${OTA_REPO_URL:-$DEFAULT_REPO_URL}"
+CHANNEL="${CHANNEL:-$DEFAULT_CHANNEL}"
+LOG_FILE="${LOG_FILE:-$DEFAULT_LOG_FILE}"
+RELEASE_FILE="${RELEASE_FILE:-/etc/hyggshi-release}"
+RUN_APT_UPGRADE="${RUN_APT_UPGRADE:-true}"
+
+# Log helper
+log_msg() {
+    local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+    if [ -w "$(dirname "$LOG_FILE" 2>/dev/null || echo /tmp)" ]; then
+        echo "$msg" >> "$LOG_FILE" 2>/dev/null || true
+    fi
+}
+
+# Read current OS release properties
+get_current_info() {
+    if [ ! -f "$RELEASE_FILE" ]; then
+        echo -e "${YELLOW}⚠ $RELEASE_FILE not found, using default configuration (1.5.0)...${NC}" >&2
+        CURRENT_VERSION="1.5.0"
+        CURRENT_NAME="Hyggshi OS"
+        CURRENT_CODENAME="Breeze"
+    else
+        # shellcheck disable=SC1090
+        source "$RELEASE_FILE"
+        CURRENT_VERSION="${VERSION:-${VERSION_ID:-1.5.0}}"
+        CURRENT_NAME="${NAME:-Hyggshi OS}"
+        CURRENT_CODENAME="${VERSION_CODENAME:-Unknown}"
+    fi
+}
+
+# Fetch resources (supports HTTP/HTTPS URLs, file:///, or local directories)
+fetch_resource() {
+    local rel_path="$1"
+    local output_path="$2"
+
+    if [[ "$OTA_REPO_URL" =~ ^file:// ]]; then
+        local local_base="${OTA_REPO_URL#file://}"
+        cp -f "$local_base/$rel_path" "$output_path"
+    elif [[ -d "$OTA_REPO_URL" ]]; then
+        cp -f "$OTA_REPO_URL/$rel_path" "$output_path"
+    else
+        local full_url="${OTA_REPO_URL%/}/$rel_path"
+        curl -fsSL "$full_url" -o "$output_path"
+    fi
+}
+
+# Semver comparison (returns 0 if v1 < v2, 1 if v1 >= v2)
+semver_is_newer() {
+    local v1="$1"
+    local v2="$2"
+    if [ "$v1" = "$v2" ]; then
+        return 1
+    fi
+    local higher
+    higher=$(printf '%s\n%s\n' "$v1" "$v2" | sort -V | tail -n1)
+    if [ "$higher" = "$v2" ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Print brand banner
+print_banner() {
+    echo -e "${CYAN}${BOLD}"
+    echo "  _   _                       _     _     ___  ____ "
+    echo " | | | |_   _  __ _  __ _ ___| |__ (_)   / _ \/ ___|"
+    echo " | |_| | | | |/ _\` |/ _\` / __| '_ \| |  | | | \___ \ "
+    echo " |  _  | |_| | (_| | (_| \__ \ | | | |  | |_| |___) |"
+    echo " |_| |_|\__, |\__, |\__, |___/_| |_|_|   \___/|____/ "
+    echo "        |___/ |___/ |___/   OTA System Updater v$VERSION"
+    echo -e "${NC}"
+}
+
+# Command: Status
+cmd_status() {
+    get_current_info
+    echo -e "${BOLD}Hyggshi OS System Status:${NC}"
+    echo -e "  • Operating System  : ${GREEN}${CURRENT_NAME}${NC}"
+    echo -e "  • Current Version   : ${CYAN}${BOLD}${CURRENT_VERSION}${NC} (${CURRENT_CODENAME})"
+    echo -e "  • Update Channel    : ${YELLOW}${CHANNEL}${NC}"
+    echo -e "  • OTA Repository    : ${BLUE}${OTA_REPO_URL}${NC}"
+    echo -e "  • Config File       : $CONFIG_FILE"
+    echo -e "  • Release File      : $RELEASE_FILE"
+    echo ""
+}
+
+# Command: Check
+cmd_check() {
+    get_current_info
+    echo -e "🔍 Connecting to Hyggshi OTA Repo [Channel: ${YELLOW}${CHANNEL}${NC}]..."
+
+    mkdir -p "$LOCAL_RUN_DIR"
+    local meta_tmp="$LOCAL_RUN_DIR/channel_meta.json"
+
+    if ! fetch_resource "metadata/${CHANNEL}.json" "$meta_tmp" 2>/dev/null; then
+        echo -e "${RED} Failed to fetch channel metadata from: ${OTA_REPO_URL}/metadata/${CHANNEL}.json${NC}"
+        return 1
+    fi
+
+    LATEST_VERSION=$(jq -r '.latest_version // empty' "$meta_tmp")
+    MIN_SUPPORTED=$(jq -r '.min_supported_version // empty' "$meta_tmp")
+    ANNOUNCEMENT=$(jq -r '.announcement // empty' "$meta_tmp")
+    WARNING=$(jq -r '.warning // empty' "$meta_tmp")
+    MANDATORY=$(jq -r '.mandatory // false' "$meta_tmp")
+
+    if [ -z "$LATEST_VERSION" ]; then
+        echo -e "${RED} Invalid metadata received!${NC}"
+        return 1
+    fi
+
+    echo ""
+    echo -e "  • Current Version    : ${BOLD}${CURRENT_VERSION}${NC}"
+    echo -e "  • Latest Version     : ${GREEN}${BOLD}${LATEST_VERSION}${NC}"
+
+    if [ -n "$ANNOUNCEMENT" ] && [ "$ANNOUNCEMENT" != "null" ]; then
+        echo -e "  • Announcement       : ${CYAN}${ANNOUNCEMENT}${NC}"
+    fi
+
+    if [ -n "$WARNING" ] && [ "$WARNING" != "null" ]; then
+        echo -e "  • ${YELLOW}Warning: ${WARNING}${NC}"
+    fi
+
+    # Check semver comparison
+    if semver_is_newer "$CURRENT_VERSION" "$LATEST_VERSION"; then
+        echo ""
+        echo -e "${GREEN}${BOLD} New update available: Hyggshi OS $LATEST_VERSION!${NC}"
+        
+        # Fetch release manifest for changelog
+        local rel_manifest="$LOCAL_RUN_DIR/release_${LATEST_VERSION}.json"
+        if fetch_resource "releases/${LATEST_VERSION}/release.json" "$rel_manifest" 2>/dev/null; then
+            local codename
+            codename=$(jq -r '.codename // empty' "$rel_manifest")
+            echo -e "  • Codename: ${BOLD}${codename}${NC}"
+            echo -e "  • Highlights:"
+            jq -r '.changelog[]? // empty' "$rel_manifest" | while read -r line; do
+                echo -e "    ${GREEN}+${NC} $line"
+            done
+        fi
+
+        echo ""
+        echo -e "To perform system upgrade, run:"
+        echo -e "  ${BOLD}sudo hyggshi-ota upgrade${NC}"
+        return 0
+    else
+        echo ""
+        echo -e "${GREEN}✔ Your Hyggshi OS system is up to date (${CURRENT_VERSION}).${NC}"
+        return 0
+    fi
+}
+
+# Command: Upgrade
+cmd_upgrade() {
+    if [ "$(id -u)" -ne 0 ]; then
+        echo -e "${RED} Error: Superuser privileges (root or sudo) required for system upgrade!${NC}"
+        exit 1
+    fi
+
+    get_current_info
+    echo -e " Starting Hyggshi OS OTA upgrade process..."
+    echo -e "  • Current Version  : ${BOLD}${CURRENT_VERSION}${NC}"
+    echo -e "  • Target Channel   : ${YELLOW}${CHANNEL}${NC}"
+
+    mkdir -p "$LOCAL_RUN_DIR"
+    local meta_tmp="$LOCAL_RUN_DIR/channel_meta.json"
+
+    if ! fetch_resource "metadata/${CHANNEL}.json" "$meta_tmp" 2>/dev/null; then
+        echo -e "${RED} Failed to fetch metadata from OTA repository.${NC}"
+        exit 1
+    fi
+
+    local target_ver
+    target_ver=$(jq -r '.latest_version // empty' "$meta_tmp")
+
+    if [ "$FORCE" != "true" ] && ! semver_is_newer "$CURRENT_VERSION" "$target_ver"; then
+        echo -e "${GREEN}✔ System is already on latest version ($CURRENT_VERSION). No upgrade needed.${NC}"
+        echo -e "Use ${BOLD}--force${NC} flag if you wish to reinstall this release."
+        exit 0
+    fi
+
+    echo -e " Target Version  : ${GREEN}${BOLD}${target_ver}${NC}"
+
+    # Fetch release manifest
+    local rel_manifest="$LOCAL_RUN_DIR/release_${target_ver}.json"
+    if ! fetch_resource "releases/${target_ver}/release.json" "$rel_manifest" 2>/dev/null; then
+        echo -e "${RED} Release manifest (release.json) not found for version $target_ver!${NC}"
+        exit 1
+    fi
+
+    local target_codename
+    target_codename=$(jq -r '.codename // "Update"' "$rel_manifest")
+    local requires_reboot
+    requires_reboot=$(jq -r '.requires_reboot // false' "$rel_manifest")
+
+    echo ""
+    echo -e "${CYAN}${BOLD} Release Summary for Hyggshi OS ${target_ver} (${target_codename}):${NC}"
+    jq -r '.changelog[]? // empty' "$rel_manifest" | while read -r line; do
+        echo -e "  * $line"
+    done
+    echo ""
+
+    if [ "$ASSUME_YES" != "true" ]; then
+        read -r -p "Are you sure you want to proceed with upgrading to Hyggshi OS ${target_ver}? [y/N]: " confirm
+        if [[ ! "$confirm" =~ ^[yY]([eE][sS])?$ ]]; then
+            echo -e "${YELLOW}Upgrade canceled.${NC}"
+            exit 0
+        fi
+    fi
+
+    log_msg "Starting upgrade from $CURRENT_VERSION to $target_ver..."
+
+    # Step 1: Execute Pre-upgrade script if defined
+    local pre_script_rel
+    pre_script_rel=$(jq -r '.pre_upgrade_script // empty' "$rel_manifest")
+    if [ -n "$pre_script_rel" ] && [ "$pre_script_rel" != "null" ]; then
+        echo -e "\n${BOLD}[1/5] Running pre-upgrade validation checks...${NC}"
+        local pre_script_local="$LOCAL_RUN_DIR/pre-upgrade.sh"
+        if fetch_resource "releases/${target_ver}/$pre_script_rel" "$pre_script_local" 2>/dev/null; then
+            chmod +x "$pre_script_local"
+            "$pre_script_local"
+        fi
+    else
+        echo -e "\n${BOLD}[1/5] Skipping pre-upgrade checks (not required).${NC}"
+    fi
+
+    # Step 2: Locate and execute Migration script
+    echo -e "\n${BOLD}[2/5] Locating and executing version migration script...${NC}"
+    local migration_script_rel
+    migration_script_rel=$(jq -r --arg from "$CURRENT_VERSION" '.migrations[]? | select(.from == $from) | .script' "$rel_manifest" | head -n1)
+
+    if [ -z "$migration_script_rel" ] || [ "$migration_script_rel" = "null" ]; then
+        migration_script_rel=$(jq -r '.migrations[0]?.script // empty' "$rel_manifest")
+    fi
+
+    if [ -n "$migration_script_rel" ] && [ "$migration_script_rel" != "null" ]; then
+        echo -e "  → Executing migration: ${migration_script_rel}"
+        local mig_script_local="$LOCAL_RUN_DIR/migration.sh"
+        if fetch_resource "releases/${target_ver}/$migration_script_rel" "$mig_script_local" 2>/dev/null; then
+            chmod +x "$mig_script_local"
+            "$mig_script_local"
+        fi
+    else
+        echo "  → No migration script required for this transition."
+    fi
+
+    # Step 3: Upgrade APT system packages
+    echo -e "\n${BOLD}[3/5] Synchronizing repositories and upgrading system packages (APT)...${NC}"
+    if [ "$RUN_APT_UPGRADE" = "true" ]; then
+        export DEBIAN_FRONTEND=noninteractive
+        echo "  → Updating package index (apt-get update)..."
+        apt-get update -qq || true
+        echo "  → Upgrading core packages..."
+        apt-get upgrade -y -qq 2>/dev/null || true
+    else
+        echo "  → Skipping APT package upgrade (RUN_APT_UPGRADE=false)."
+    fi
+
+    # Step 4: Execute Post-upgrade script if defined
+    local post_script_rel
+    post_script_rel=$(jq -r '.post_upgrade_script // empty' "$rel_manifest")
+    if [ -n "$post_script_rel" ] && [ "$post_script_rel" != "null" ]; then
+        echo -e "\n${BOLD}[4/5] Running post-upgrade finalizing script...${NC}"
+        local post_script_local="$LOCAL_RUN_DIR/post-upgrade.sh"
+        if fetch_resource "releases/${target_ver}/$post_script_rel" "$post_script_local" 2>/dev/null; then
+            chmod +x "$post_script_local"
+            "$post_script_local"
+        fi
+    else
+        echo -e "\n${BOLD}[4/5] Skipping post-upgrade tasks.${NC}"
+    fi
+
+    # Step 5: Update /etc/hyggshi-release
+    echo -e "\n${BOLD}[5/5] Updating OS release identification metadata...${NC}"
+    local build_today
+    build_today=$(date '+%Y%m%d')
+
+    cat <<EOF > "$RELEASE_FILE"
+ID=hyggshi
+NAME="Hyggshi OS"
+PRETTY_NAME="Hyggshi OS ${target_ver} (${target_codename})"
+VERSION="${target_ver}"
+VERSION_ID="${target_ver}"
+VERSION_CODENAME="${target_codename}"
+CHANNEL="${CHANNEL}"
+BUILD_ID="${build_today}"
+HOME_URL="https://github.com/Hyggshi-OS-Research-Technology/Hyggshi-OS-Releases"
+SUPPORT_URL="https://github.com/Hyggshi-OS-Research-Technology/Hyggshi-OS-Releases/issues"
+BUG_REPORT_URL="https://github.com/Hyggshi-OS-Research-Technology/Hyggshi-OS-Releases/issues"
+EOF
+
+    echo "  ✔ Successfully updated $RELEASE_FILE!"
+    log_msg "Upgrade completed successfully from $CURRENT_VERSION -> $target_ver."
+
+    echo ""
+    echo -e "${GREEN}${BOLD} CONGRATULATIONS! SYSTEM SUCCESSFULLY UPGRADED TO HYGGSHI OS ${target_ver} (${target_codename})!${NC}"
+    if [ "$requires_reboot" = "true" ]; then
+        echo -e "${YELLOW}${BOLD}⚠ A system restart is recommended to complete the upgrade.${NC}"
+        echo -e "Reboot now: ${BOLD}sudo reboot${NC}"
+    fi
+    echo ""
+}
+
+# Command: Switch Channel
+cmd_channel() {
+    local target_ch="${1:-}"
+    if [ -z "$target_ch" ]; then
+        echo -e "Current Channel : ${YELLOW}${BOLD}${CHANNEL}${NC}"
+        echo "Available channels: stable, beta, testing"
+        echo "Usage: sudo hyggshi-ota channel <stable|beta|testing>"
+        return 0
+    fi
+
+    if [[ ! "$target_ch" =~ ^(stable|beta|testing)$ ]]; then
+        echo -e "${RED} Invalid channel: $target_ch. Allowed: stable, beta, testing.${NC}"
+        exit 1
+    fi
+
+    if [ "$(id -u)" -ne 0 ]; then
+        echo -e "${RED} Root privileges required to change update channel in $CONFIG_FILE!${NC}"
+        exit 1
+    fi
+
+    mkdir -p "$(dirname "$CONFIG_FILE")"
+    if [ -f "$CONFIG_FILE" ]; then
+        sed -i -E "s/^CHANNEL=.*/CHANNEL=\"$target_ch\"/" "$CONFIG_FILE"
+    else
+        echo "CHANNEL=\"$target_ch\"" > "$CONFIG_FILE"
+    fi
+
+    echo -e "${GREEN}✔ Successfully switched OTA channel to: ${BOLD}$target_ch${NC}"
+    CHANNEL="$target_ch"
+    cmd_check
+}
+
+# Command: Log
+cmd_log() {
+    if [ -f "$LOG_FILE" ]; then
+        echo -e "${BOLD}Hyggshi OTA Update Log ($LOG_FILE):${NC}"
+        tail -n 25 "$LOG_FILE"
+    else
+        echo -e "${YELLOW}No log records found at $LOG_FILE.${NC}"
+    fi
+}
+
+# Command: Help
+cmd_help() {
+    print_banner
+    echo -e "${BOLD}USAGE:${NC}"
+    echo "  hyggshi-ota [command] [options]"
+    echo ""
+    echo -e "${BOLD}COMMANDS:${NC}"
+    echo "  status               Show current OS version and OTA status"
+    echo "  check                Check for new updates from OTA repository"
+    echo "  upgrade              Perform full system upgrade (pre-check, migration, apt)"
+    echo "  channel [name]       Display or switch release channel (stable, beta, testing)"
+    echo "  log                  Display recent OTA update history"
+    echo "  help                 Display this help guide"
+    echo ""
+    echo -e "${BOLD}OPTIONS:${NC}"
+    echo "  --repo-url <URL>     Override OTA repository base URL (HTTP or local path)"
+    echo "  --channel <channel>  Override release channel"
+    echo "  -y, --yes            Assume yes to all upgrade prompts"
+    echo "  -f, --force          Force upgrade even if already on the latest version"
+    echo ""
+}
+
+# Parse command-line arguments
+ACTION="status"
+ASSUME_YES="false"
+FORCE="false"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        status|check|upgrade|channel|log|help)
+            ACTION="$1"
+            shift
+            if [ "$ACTION" = "channel" ] && [ -n "${1:-}" ] && [[ ! "$1" =~ ^-- ]]; then
+                NEW_CHANNEL="$1"
+                shift
+            fi
+            ;;
+        --repo-url)
+            OTA_REPO_URL="$2"
+            shift 2
+            ;;
+        --channel)
+            CHANNEL="$2"
+            shift 2
+            ;;
+        -y|--yes)
+            ASSUME_YES="true"
+            shift
+            ;;
+        -f|--force)
+            FORCE="true"
+            shift
+            ;;
+        -h|--help)
+            ACTION="help"
+            shift
+            ;;
+        *)
+            echo -e "${RED}Unknown argument: $1${NC}"
+            cmd_help
+            exit 1
+            ;;
+    esac
+done
+
+case "$ACTION" in
+    status)  cmd_status ;;
+    check)   cmd_check ;;
+    upgrade) cmd_upgrade ;;
+    channel) cmd_channel "${NEW_CHANNEL:-}" ;;
+    log)     cmd_log ;;
+    help)    cmd_help ;;
+esac

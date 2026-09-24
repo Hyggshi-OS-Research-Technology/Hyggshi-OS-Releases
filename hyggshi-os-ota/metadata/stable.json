@@ -1,0 +1,10 @@
+{
+  "channel": "stable",
+  "latest_version": "1.4.1",
+  "min_supported_version": "1.4.0",
+  "release_date": "2026-09-24",
+  "mandatory": false,
+  "release_url": "releases/1.4.1/release.json",
+  "announcement": "Hyggshi OS 1.4.1 Optimize the automatic OTA system and fix some bugs flatpack and flathub.",
+  "warning": null
+}
