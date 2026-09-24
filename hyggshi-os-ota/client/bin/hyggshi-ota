@@ -401,6 +401,28 @@ cmd_upgrade() {
         echo "  → Skipping APT package upgrade (RUN_APT_UPGRADE=false)."
     fi
 
+    # Step 3.5: Execute HCL release configuration via hcl_parser.py if available
+    local hcl_rel
+    hcl_rel=$(json_val "hcl_config" "$rel_manifest")
+    if [ -z "$hcl_rel" ] || [ "$hcl_rel" = "null" ]; then
+        hcl_rel="scripts/config/config.ini"
+    fi
+
+    local hcl_local="$LOCAL_RUN_DIR/config.ini"
+    if fetch_resource "releases/${target_ver}/$hcl_rel" "$hcl_local" 2>/dev/null; then
+        local hcl_parser_bin=""
+        if [ -x "/usr/local/bin/hcl_parser.py" ]; then
+            hcl_parser_bin="/usr/local/bin/hcl_parser.py"
+        elif [ -f "$(dirname "$0")/hcl_parser.py" ]; then
+            hcl_parser_bin="$(dirname "$0")/hcl_parser.py"
+        fi
+
+        if [ -n "$hcl_parser_bin" ]; then
+            echo -e "\n${BOLD}[HCL] Invoking HCL Parser (hcl_parser.py) to execute release components...${NC}"
+            python3 "$hcl_parser_bin" --config "$hcl_local" --base-dir "$LOCAL_RUN_DIR" --apply || true
+        fi
+    fi
+
     # Step 4: Execute Post-upgrade script if defined
     local post_script_rel
     post_script_rel=$(json_val "post_upgrade_script" "$rel_manifest")
@@ -415,36 +437,49 @@ cmd_upgrade() {
         echo -e "\n${BOLD}[4/5] Skipping post-upgrade tasks.${NC}"
     fi
 
-    # Step 5: Update /etc/hyggshi-release and sync /etc/os-release
+    # Step 5: Safely update version in /etc/os-release PRESERVING ALL existing fields
     echo -e "\n${BOLD}[5/5] Updating OS release identification metadata...${NC}"
     local build_today
     build_today=$(date '+%Y%m%d')
 
-    cat <<EOF > "$RELEASE_FILE"
-ID=hyggshios
-NAME="Hyggshi OS"
-PRETTY_NAME="Hyggshi OS ${target_ver} (${target_codename})"
-VERSION="${target_ver}"
-VERSION_ID="${target_ver}"
-VERSION_CODENAME="${target_codename}"
-CHANNEL="${CHANNEL}"
-BUILD_ID="${build_today}"
-HOME_URL="https://github.com/Hyggshi-OS-Research-Technology/Hyggshi-OS-Releases"
-SUPPORT_URL="https://github.com/Hyggshi-OS-Research-Technology/Hyggshi-OS-Releases/issues"
-BUG_REPORT_URL="https://github.com/Hyggshi-OS-Research-Technology/Hyggshi-OS-Releases/issues"
-EOF
+    # Remove symlink if /etc/hyggshi-release points to /etc/os-release to avoid accidental overwrite
+    if [ -L "$RELEASE_FILE" ]; then
+        rm -f "$RELEASE_FILE"
+    fi
 
-    # Sync into /etc/os-release if present
+    # Update in-place in /etc/os-release preserving all comments, ID_LIKE, HYGGSHI_BASE_*, LOGO, etc.
     if [ -f "/etc/os-release" ]; then
         sed -i -E "s/^VERSION_ID=.*/VERSION_ID=\"${target_ver}\"/" /etc/os-release
         sed -i -E "s/^VERSION=.*/VERSION=\"${target_ver} (${target_codename}) (Debian trixie)\"/" /etc/os-release
         sed -i -E "s/^PRETTY_NAME=.*/PRETTY_NAME=\"Hyggshi OS ${target_ver} ${target_codename} Debian Edition\"/" /etc/os-release
         sed -i -E "s/^NAME=.*/NAME=\"Hyggshi OS ${target_ver} ${target_codename} Debian Edition\"/" /etc/os-release
         sed -i -E "s/^VERSION_CODENAME=.*/VERSION_CODENAME=\"${target_codename}\"/" /etc/os-release
-        echo "  ✔ Synchronized updates to /etc/os-release!"
+
+        # Ensure critical Hyggshi distro identity fields exist without modifying others
+        if ! grep -q '^ID_LIKE=' /etc/os-release; then
+            echo "ID_LIKE=debian" >> /etc/os-release
+        fi
+        if ! grep -q '^HYGGSHI_BASE_DISTRO=' /etc/os-release; then
+            echo "HYGGSHI_BASE_DISTRO=debian" >> /etc/os-release
+        fi
+        if ! grep -q '^HYGGSHI_BASE_CODENAME=' /etc/os-release; then
+            echo "HYGGSHI_BASE_CODENAME=trixie" >> /etc/os-release
+        fi
+        if ! grep -q '^LOGO=' /etc/os-release; then
+            echo "LOGO=distributor-logo" >> /etc/os-release
+        fi
+
+        echo "  ✔ Successfully updated /etc/os-release (all original distribution fields preserved)!"
     fi
 
-    echo "  ✔ Successfully updated $RELEASE_FILE!"
+    # Record OTA release state in a dedicated separate metadata file (never overwrite /etc/os-release)
+    cat <<EOF > /etc/hyggshi-ota-state.conf
+LAST_UPGRADE_DATE="${build_today}"
+CURRENT_VERSION="${target_ver}"
+CURRENT_CODENAME="${target_codename}"
+CHANNEL="${CHANNEL}"
+EOF
+
     log_msg "Upgrade completed successfully from $CURRENT_VERSION -> $target_ver."
 
     echo ""

@@ -1,0 +1,11 @@
+<RCC>
+  <qresource prefix="/">
+    <file>icons/logo.png</file>
+    <file>icons/theme-light.png</file>
+    <file>icons/theme-dark.png</file>
+    <file>icons/theme-auto.png</file>
+    <file>icons/discord.png</file>
+    <file>icons/x.png</file>
+    <file>icons/Review-app.png</file>
+  </qresource>
+</RCC>

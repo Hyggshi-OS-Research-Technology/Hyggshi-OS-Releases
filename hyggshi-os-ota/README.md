@@ -47,26 +47,31 @@ hyggshi-os-ota/
 
 ---
 
-## ⚙️ 2. Device Upgrade Execution Flow
+## ⚙️ 2. Device Upgrade Execution Flow (HCL Driven)
 
 ```text
-/etc/hyggshi-release (e.g., version 1.5.0)
+/etc/os-release (e.g., version 1.4.0)
         ↓
 hyggshi-ota check / upgrade
         ↓
-Hyggshi OS OTA Repo (metadata/stable.json)
+Hyggshi OS OTA Repo (metadata/stable.json -> release.json)
         ↓
-New version detected: 1.6.0 (Cosmos)
+New version detected: 1.4.1 (Verdant Valley)
         ↓
-Download & execute [1/5]: pre-upgrade.sh (disk space validation, backup)
+Download & execute [1/5]: pre-upgrade.sh (disk space & network validation)
         ↓
-Download & execute [2/5]: migrations/from-1.5.0.sh (configuration transition)
+Download & execute [2/5]: migrations/from-*.sh (configuration transition)
         ↓
 Synchronize [3/5]: APT repository & core package upgrades
         ↓
-Download & execute [4/5]: post-upgrade.sh (cache cleanups & /var/log/hyggshi-ota.log)
+Execute HCL [3.5/5]: hcl_parser.py --config config.ini --apply
+        ├── [package]       -> python3, jq, install-web (nexcode-ide), flatpak commands
+        ├── [customization] -> copy desktop branding (xfce-x.svg), greeter gtk.css
+        └── [compilers]     -> build sound-shortcut.sh, welcome.sh
         ↓
-Update [5/5]: /etc/hyggshi-release -> 1.6.0
+Download & execute [4/5]: post-upgrade.sh (final system cleanups)
+        ↓
+Update [5/5]: /etc/os-release -> 1.4.1 (100% PRESERVES ID_LIKE, HYGGSHI_BASE_*, LOGO)
         ↓
 🎉 Complete! System reboot prompt if requires_reboot=true
 ```

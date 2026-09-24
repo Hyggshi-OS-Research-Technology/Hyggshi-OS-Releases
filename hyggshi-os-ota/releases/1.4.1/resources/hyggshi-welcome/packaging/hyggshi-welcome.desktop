@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Hyggshi Welcome
+Name=Hyggshi Welcome
+Comment=Quick configuration of Hyggshi OS for first-time users.
+Exec=hyggshi-welcome
+Icon=hyggshi-welcome
+Terminal=false
+Categories=System;Settings;

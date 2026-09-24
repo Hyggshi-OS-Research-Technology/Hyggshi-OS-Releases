@@ -43,13 +43,15 @@ if ! command -v jq >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
     apt-get install -y -qq jq curl 2>/dev/null || true
 fi
 
-# 1. Install CLI binary
-echo "  [1/4] Installing hyggshi-ota CLI tool to /usr/local/bin/..."
+# 1. Install CLI binary & HCL parser
+echo "  [1/4] Installing hyggshi-ota CLI and hcl_parser.py to /usr/local/bin/..."
 fetch_install_file "bin/hyggshi-ota" "/usr/local/bin/hyggshi-ota" "0755"
+fetch_install_file "bin/hcl_parser.py" "/usr/local/bin/hcl_parser.py" "0755"
 
-# 2. Symlink /etc/hyggshi-release -> /etc/os-release
-echo "  [2/4] Linking /etc/hyggshi-release to /etc/os-release..."
-ln -sf /etc/os-release /etc/hyggshi-release
+# 2. Clean up obsolete /etc/hyggshi-release symlink if present
+if [ -L /etc/hyggshi-release ]; then
+    rm -f /etc/hyggshi-release
+fi
 
 # 3. Initialize /etc/hyggshi-ota.conf if not present
 if [ ! -f /etc/hyggshi-ota.conf ]; then

@@ -6,6 +6,7 @@
   "changelog": [
     "Optimize the automatic OTA system and fix some bugs flatpack and flathub."
   ],
+  "hcl_config": "scripts/config/config.ini",
   "post_upgrade_script": "scripts/post-upgrade-1.4.1.sh",
   "requires_reboot": true,
   "migrations": []
