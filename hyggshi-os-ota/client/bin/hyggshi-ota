@@ -141,32 +141,35 @@ except:
     fi
 }
 
-# Read current OS release properties
+# Read current OS release properties directly from /etc/os-release (Standard FHS)
 get_current_info() {
-    # 1. Prefer reading directly from /etc/os-release if present (official distro release file)
+    CURRENT_ID="hyggshios"
+    CURRENT_VERSION=""
+    CURRENT_NAME="Hyggshi OS"
+    CURRENT_CODENAME="Verdant Valley"
+
+    # 1. Primary Source: /etc/os-release (Official System ID and Version)
     if [ -f "/etc/os-release" ]; then
-        local os_ver
-        os_ver=$(grep -E '^VERSION_ID=' /etc/os-release | head -n1 | cut -d'=' -f2 | tr -d '"'\'' ')
-        local os_codename
-        os_codename=$(grep -E '^VERSION_CODENAME=' /etc/os-release | head -n1 | cut -d'=' -f2 | tr -d '"'\'' ')
-        if [ -n "$os_ver" ]; then
-            CURRENT_VERSION="$os_ver"
-            CURRENT_NAME="Hyggshi OS"
-            CURRENT_CODENAME="${os_codename:-Verdant Valley}"
-        fi
+        # shellcheck disable=SC1091
+        CURRENT_ID=$(grep -E '^ID=' /etc/os-release | head -n1 | cut -d'=' -f2 | tr -d '"'\'' ' || echo "hyggshios")
+        CURRENT_VERSION=$(grep -E '^VERSION_ID=' /etc/os-release | head -n1 | cut -d'=' -f2 | tr -d '"'\'' ' || true)
+        CURRENT_CODENAME=$(grep -E '^VERSION_CODENAME=' /etc/os-release | head -n1 | cut -d'=' -f2 | tr -d '"'\'' ' || echo "Verdant Valley")
+        CURRENT_NAME=$(grep -E '^NAME=' /etc/os-release | head -n1 | cut -d'=' -f2 | tr -d '"' || echo "Hyggshi OS")
     fi
 
-    # 2. Read /etc/hyggshi-release if available
-    if [ -f "$RELEASE_FILE" ]; then
+    # 2. Fallback to /etc/hyggshi-release only if VERSION_ID was not in /etc/os-release
+    if [ -z "$CURRENT_VERSION" ] && [ -f "$RELEASE_FILE" ]; then
         # shellcheck disable=SC1090
         source "$RELEASE_FILE"
-        CURRENT_VERSION="${VERSION:-${VERSION_ID:-${CURRENT_VERSION:-1.4.0}}}"
-        CURRENT_NAME="${NAME:-${CURRENT_NAME:-Hyggshi OS}}"
-        CURRENT_CODENAME="${VERSION_CODENAME:-${CURRENT_CODENAME:-Unknown}}"
+        CURRENT_ID="${ID:-$CURRENT_ID}"
+        CURRENT_VERSION="${VERSION_ID:-${VERSION:-}}"
+        CURRENT_CODENAME="${VERSION_CODENAME:-$CURRENT_CODENAME}"
+        CURRENT_NAME="${NAME:-$CURRENT_NAME}"
     fi
 
+    # 3. Final fallback default
+    CURRENT_ID="${CURRENT_ID:-hyggshios}"
     CURRENT_VERSION="${CURRENT_VERSION:-1.4.0}"
-    CURRENT_NAME="${CURRENT_NAME:-Hyggshi OS}"
     CURRENT_CODENAME="${CURRENT_CODENAME:-Verdant Valley}"
 }
 
@@ -219,11 +222,12 @@ cmd_status() {
     get_current_info
     echo -e "${BOLD}Hyggshi OS System Status:${NC}"
     echo -e "  • Operating System  : ${GREEN}${CURRENT_NAME}${NC}"
+    echo -e "  • OS ID (ID)        : ${CYAN}${CURRENT_ID}${NC}"
     echo -e "  • Current Version   : ${CYAN}${BOLD}${CURRENT_VERSION}${NC} (${CURRENT_CODENAME})"
     echo -e "  • Update Channel    : ${YELLOW}${CHANNEL}${NC}"
     echo -e "  • OTA Repository    : ${BLUE}${OTA_REPO_URL}${NC}"
     echo -e "  • Config File       : $CONFIG_FILE"
-    echo -e "  • Release File      : $RELEASE_FILE"
+    echo -e "  • Release File      : /etc/os-release"
     echo ""
 }
 

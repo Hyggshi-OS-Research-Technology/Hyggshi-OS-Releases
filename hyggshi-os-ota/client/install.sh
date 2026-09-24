@@ -47,38 +47,9 @@ fi
 echo "  [1/4] Installing hyggshi-ota CLI tool to /usr/local/bin/..."
 fetch_install_file "bin/hyggshi-ota" "/usr/local/bin/hyggshi-ota" "0755"
 
-# 2. Initialize /etc/hyggshi-release dynamically based on current system
-echo "  [2/4] Initializing OS identification file /etc/hyggshi-release..."
-if [ ! -f /etc/hyggshi-release ]; then
-    # Detect real version from /etc/os-release if available
-    CURRENT_SYS_VER=""
-    CURRENT_SYS_CODENAME=""
-    if [ -f /etc/os-release ]; then
-        CURRENT_SYS_VER=$(grep -E '^VERSION_ID=' /etc/os-release | head -n1 | cut -d'=' -f2 | tr -d '"'\'' ')
-        CURRENT_SYS_CODENAME=$(grep -E '^VERSION_CODENAME=' /etc/os-release | head -n1 | cut -d'=' -f2 | tr -d '"'\'' ')
-    fi
-
-    if [ -n "$CURRENT_SYS_VER" ]; then
-        echo "      Detected existing system version: $CURRENT_SYS_VER (${CURRENT_SYS_CODENAME:-Unknown})"
-        cat <<EOF > /etc/hyggshi-release
-ID=hyggshios
-NAME="Hyggshi OS"
-PRETTY_NAME="Hyggshi OS ${CURRENT_SYS_VER} (${CURRENT_SYS_CODENAME:-Verdant Valley})"
-VERSION="${CURRENT_SYS_VER}"
-VERSION_ID="${CURRENT_SYS_VER}"
-VERSION_CODENAME="${CURRENT_SYS_CODENAME:-Verdant Valley}"
-CHANNEL="stable"
-BUILD_ID="$(date '+%Y%m%d')"
-HOME_URL="https://github.com/Hyggshi-OS-Research-Technology/Hyggshi-OS-Releases"
-SUPPORT_URL="https://github.com/Hyggshi-OS-Research-Technology/Hyggshi-OS-Releases/issues"
-BUG_REPORT_URL="https://github.com/Hyggshi-OS-Research-Technology/Hyggshi-OS-Releases/issues"
-EOF
-    else
-        fetch_install_file "etc/hyggshi-release" "/etc/hyggshi-release" "0644"
-    fi
-else
-    echo "  [2/4] Preserving existing /etc/hyggshi-release."
-fi
+# 2. Symlink /etc/hyggshi-release -> /etc/os-release
+echo "  [2/4] Linking /etc/hyggshi-release to /etc/os-release..."
+ln -sf /etc/os-release /etc/hyggshi-release
 
 # 3. Initialize /etc/hyggshi-ota.conf if not present
 if [ ! -f /etc/hyggshi-ota.conf ]; then
