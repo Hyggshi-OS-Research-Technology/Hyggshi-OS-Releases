@@ -239,13 +239,25 @@ class HclParser:
         apt_packages_to_install = []
 
         print(f"\n{Colors.BOLD}[HCL/Package] Processing package directives...{Colors.NC}")
+
+        # 3.1 First Pass: Collect and install all declared APT packages first so tools like wget/curl are ready
         for key, val in package_entries:
             if isinstance(val, str) and val.lower() == "true":
                 pkg_name = key
                 if pkg_name == "python":
                     pkg_name = "python3"
                 apt_packages_to_install.append(pkg_name)
-            elif isinstance(val, dict) and val.get("type") == "function":
+
+        if apt_packages_to_install:
+            print(f"  → Installing declared core APT packages first: {', '.join(apt_packages_to_install)}")
+            env = os.environ.copy()
+            env["DEBIAN_FRONTEND"] = "noninteractive"
+            subprocess.run(["apt-get", "update", "-qq"], env=env, check=False)
+            subprocess.run(["apt-get", "install", "-y", "-qq"] + apt_packages_to_install, env=env, check=False)
+
+        # 3.2 Second Pass: Execute complex components (install-web, commands, copy)
+        for key, val in package_entries:
+            if isinstance(val, dict) and val.get("type") == "function":
                 func_name = val.get("func")
                 args = dict(val.get("args", []))
                 func_arg_list = val.get("args", [])
@@ -255,7 +267,12 @@ class HclParser:
                     for ak, av in func_arg_list:
                         if ak == "run":
                             print(f"      $ {av}")
-                            subprocess.run(av, shell=True, check=False)
+                            res = subprocess.run(av, shell=True, check=False)
+                            # Fallback if wget fails, try curl
+                            if res.returncode != 0 and av.strip().startswith("wget "):
+                                curl_fallback = av.replace("wget ", "curl -fsSL -O ")
+                                print(f"      [Fallback to curl] $ {curl_fallback}")
+                                subprocess.run(curl_fallback, shell=True, check=False)
 
                 elif func_name == "command":
                     print(f"  → Executing command [{key}]:")
@@ -302,13 +319,6 @@ class HclParser:
                 elif func_name == "copy":
                     self.handle_copy(args, key, ver)
 
-        if apt_packages_to_install:
-            print(f"  → Installing declared APT packages: {', '.join(apt_packages_to_install)}")
-            env = os.environ.copy()
-            env["DEBIAN_FRONTEND"] = "noninteractive"
-            subprocess.run(["apt-get", "update", "-qq"], env=env, check=False)
-            subprocess.run(["apt-get", "install", "-y", "-qq"] + apt_packages_to_install, env=env, check=False)
-
         # 4. [customization] Section
         cust_entries = self.raw_sections.get("customization", [])
         if cust_entries:
@@ -337,22 +347,43 @@ class HclParser:
                         file_rel = args.get("file", "").lstrip("./")
                         target_script = os.path.join(self.base_dir, file_rel)
 
+                        # Check fallback path if resources/hyggshi-extensions-welcome vs resources/hyggshi-welcome
                         if not os.path.isfile(target_script) and "hyggshi-extensions-welcome" in file_rel:
                             alt_rel = file_rel.replace("hyggshi-extensions-welcome", "hyggshi-welcome")
                             alt_path = os.path.join(self.base_dir, alt_rel)
                             if os.path.isfile(alt_path):
                                 target_script = alt_path
 
+                        # If target script is not found locally, fetch the full resources archive from OTA repo
+                        if not os.path.isfile(target_script):
+                            tar_url = f"https://raw.githubusercontent.com/Hyggshi-OS-Research-Technology/Hyggshi-OS-Releases/main/hyggshi-os-ota/releases/{ver}/resources.tar.gz"
+                            print(f"  → Extension sources not found locally. Fetching resources bundle from: {tar_url}")
+                            local_tar = os.path.join(self.base_dir, "resources.tar.gz")
+                            if self.download_asset(tar_url, local_tar):
+                                print(f"      ✔ Unpacking extension sources into {self.base_dir}...")
+                                subprocess.run(["tar", "-xzf", local_tar, "-C", self.base_dir], check=False)
+                                # Re-check paths after unpacking
+                                if os.path.isfile(os.path.join(self.base_dir, file_rel)):
+                                    target_script = os.path.join(self.base_dir, file_rel)
+                                elif "hyggshi-extensions-welcome" in file_rel:
+                                    alt_path = os.path.join(self.base_dir, file_rel.replace("hyggshi-extensions-welcome", "hyggshi-welcome"))
+                                    if os.path.isfile(alt_path):
+                                        target_script = alt_path
+
                         if os.path.isfile(target_script):
                             script_dir = os.path.dirname(target_script)
                             os.chmod(target_script, 0o755)
-                            print(f"  → Building component [{key}]: {target_script}")
+                            print(f"  → Building and installing component [{key}]: {target_script}")
                             env = os.environ.copy()
                             env["SRC_DIR"] = script_dir
                             env["DEBIAN_FRONTEND"] = "noninteractive"
-                            subprocess.run(["bash", target_script], env=env, check=False)
+                            res = subprocess.run(["bash", target_script], env=env, check=False)
+                            if res.returncode == 0:
+                                print(f"      ✔ Component [{key}] built and installed successfully.")
+                            else:
+                                print(f"      ⚠ Component [{key}] build exited with code {res.returncode}")
                         else:
-                            print(f"  ⚠ Compiler target script not found: {target_script}")
+                            print(f"  ❌ Compiler target script not found: {target_script}")
 
         # 6. Safe update of /etc/os-release (NON-DESTRUCTIVE)
         print(f"\n{Colors.BOLD}[HCL/System] Synchronizing /etc/os-release safely...{Colors.NC}")
