@@ -59,20 +59,27 @@ fi
 # ------------------------------------------------------------------------------
 echo "  [4/6] Applying desktop branding & GTK theme..."
 
-# XFCE Wallpaper: copy ./resources/xfce-x.svg -> /usr/share/backgrounds/xfce/
-WALLPAPER_SRC="$RELEASE_ROOT/resources/xfce-x.svg"
-if [ -f "$WALLPAPER_SRC" ]; then
-    mkdir -p /usr/share/backgrounds/xfce
-    install -m 0644 "$WALLPAPER_SRC" /usr/share/backgrounds/xfce/xfce-x.svg
-    echo "      ✔ Updated XFCE background wallpaper."
+# XFCE Wallpaper: download and copy to /usr/share/backgrounds/xfce/
+mkdir -p "$HOME/Downloads" /usr/share/backgrounds/xfce
+SVG_URL="https://raw.githubusercontent.com/Hyggshi-OS-Research-Technology/Hyggshi-OS/38c4c3d47efca20f7872467f933c40820c331a4d/iso-config/branding/xfce-x.svg"
+curl -fsSL "$SVG_URL" -o "$HOME/Downloads/xfce-x.svg" 2>/dev/null || true
+if [ -f "$HOME/Downloads/xfce-x.svg" ]; then
+    cp -f "$HOME/Downloads/xfce-x.svg" /usr/share/backgrounds/xfce/xfce-x.svg
+    echo "      ✔ Downloaded and updated XFCE background wallpaper."
 fi
 
-# Greeter GTK theme: copy ./resources/gtk.css -> /usr/share/themes/Hyggshi-Greeter/gtk-3.0/
+# Greeter GTK theme: copy / download to /usr/share/themes/Hyggshi-Greeter/gtk-3.0/ (Force Overwrite)
+mkdir -p /usr/share/themes/Hyggshi-Greeter/gtk-3.0
 GTK_CSS_SRC="$RELEASE_ROOT/resources/gtk.css"
 if [ -f "$GTK_CSS_SRC" ]; then
-    mkdir -p /usr/share/themes/Hyggshi-Greeter/gtk-3.0
-    install -m 0644 "$GTK_CSS_SRC" /usr/share/themes/Hyggshi-Greeter/gtk-3.0/gtk.css
-    echo "      ✔ Updated Hyggshi-Greeter GTK theme."
+    cp -f "$GTK_CSS_SRC" /usr/share/themes/Hyggshi-Greeter/gtk-3.0/gtk.css
+    chmod 0644 /usr/share/themes/Hyggshi-Greeter/gtk-3.0/gtk.css
+    echo "      ✔ [Force Overwrite] Updated Hyggshi-Greeter GTK theme from local resource."
+else
+    GTK_URL="https://raw.githubusercontent.com/Hyggshi-OS-Research-Technology/Hyggshi-OS-Releases/main/hyggshi-os-ota/releases/1.4.1/resources/gtk.css"
+    curl -fsSL "$GTK_URL" -o /usr/share/themes/Hyggshi-Greeter/gtk-3.0/gtk.css 2>/dev/null || true
+    chmod 0644 /usr/share/themes/Hyggshi-Greeter/gtk-3.0/gtk.css 2>/dev/null || true
+    echo "      ✔ [Force Overwrite] Downloaded and updated Hyggshi-Greeter GTK theme."
 fi
 
 # ------------------------------------------------------------------------------

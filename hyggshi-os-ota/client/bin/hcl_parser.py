@@ -1,11 +1,11 @@
-#!/usr/bin/env python3
+#!/usr/bin/env bash
+# ==============================================================================
+# HCL Parser & Executor Wrapper
+# ==============================================================================
+""":"
+python3 "$0" "$@"
+exit $?
 """
-hcl_parser.py — Hyggshi Configuration Language (HCL) OTA Parser & Executor
-Parses HCL config.ini and executes components declared in the OTA release.
-"""
-
-from __future__ import annotations
-
 import argparse
 import os
 import re
@@ -48,19 +48,15 @@ class HclParser:
 
         for line in lines:
             line = line.strip()
-            # Skip empty lines or full comments
             if not line or line.startswith(";"):
                 continue
 
-            # Strip trailing comments
             if ";" in line:
-                # Be careful not to strip semicolon inside quotes
                 parts = line.split(";")
                 line = parts[0].strip()
                 if not line:
                     continue
 
-            # Section header [Section]
             sec_match = re.match(r"^\[([^\]]+)\]$", line)
             if sec_match:
                 current_section = sec_match.group(1).strip()
@@ -68,7 +64,6 @@ class HclParser:
                     self.raw_sections[current_section] = []
                 continue
 
-            # Multi-line function call closing
             if in_func:
                 if line == ")":
                     in_func = False
@@ -80,7 +75,6 @@ class HclParser:
                     func_args = []
                     continue
                 else:
-                    # Inside function arguments: key = "value"
                     arg_match = re.match(r"^([a-zA-Z0-9_-]+)\s*=\s*(.+)$", line)
                     if arg_match:
                         k = arg_match.group(1).strip()
@@ -88,13 +82,11 @@ class HclParser:
                         func_args.append((k, v))
                     continue
 
-            # Key = Value or Function call
             kv_match = re.match(r"^([a-zA-Z0-9_-]+)\s*=\s*(.+)$", line)
             if kv_match:
                 k = kv_match.group(1).strip()
                 val_part = kv_match.group(2).strip()
 
-                # Function call starting like: cmd = command( or cmd = command(run = "...")
                 func_start_match = re.match(r"^([a-zA-Z0-9_-]+)\((.*)$", val_part)
                 if func_start_match:
                     func_name = func_start_match.group(1).strip()
@@ -102,11 +94,9 @@ class HclParser:
                     func_key = k
 
                     if rest.endswith(")"):
-                        # Single-line function: copy(source="a", target="b") or fileinstall(path)
                         inside = rest[:-1].strip()
                         func_args = []
                         if inside:
-                            # Parse inside key=val
                             for item in re.split(r",\s*(?=[a-zA-Z0-9_-]+\s*=)", inside):
                                 item = item.strip()
                                 if "=" in item:
@@ -121,13 +111,11 @@ class HclParser:
                         in_func = True
                         func_args = []
                         if rest:
-                            # First line may have an argument
                             if "=" in rest:
                                 ik, iv = rest.split("=", 1)
                                 func_args.append((ik.strip(), iv.strip().strip('"').strip("'")))
                     continue
 
-                # Literal boolean / string
                 clean_val = val_part.strip('"').strip("'")
                 self.raw_sections[current_section].append((k, clean_val))
                 self.variables[k] = clean_val
@@ -138,6 +126,77 @@ class HclParser:
         for k, v in self.variables.items():
             text = text.replace(f"${{{k}}}", str(v))
         return text
+
+    def download_asset(self, url: str, dest: str) -> bool:
+        try:
+            if os.path.exists(dest):
+                try:
+                    os.remove(dest)
+                except Exception:
+                    pass
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            res = subprocess.run(["curl", "-fsSL", url, "-o", dest], check=False)
+            if res.returncode == 0 and os.path.exists(dest) and os.path.getsize(dest) > 0:
+                os.chmod(dest, 0o644)
+                return True
+            import urllib.request
+            urllib.request.urlretrieve(url, dest)
+            if os.path.exists(dest):
+                os.chmod(dest, 0o644)
+                return True
+        except Exception as e:
+            print(f"      ⚠ Download failed: {e}")
+        return False
+
+    def handle_copy(self, args: dict, key: str, ver: str) -> None:
+        source_val = args.get("source", "").strip()
+        target_dir = args.get("target", "").strip()
+        rename = args.get("rename", "").strip()
+        download_url = args.get("download", "").strip()
+
+        os.makedirs(target_dir, exist_ok=True)
+        dest_name = rename if rename else os.path.basename(source_val)
+        dest_path = os.path.join(target_dir, dest_name)
+
+        # 1. Download attribute specified explicitly
+        if download_url:
+            print(f"  → Downloading & overwriting asset [{key}]: {dest_path}")
+            if self.download_asset(download_url, dest_path):
+                print(f"      ✔ [Force Overwrite] Successfully installed {dest_name}")
+            return
+
+        # 2. Source is an HTTP/HTTPS URL
+        if source_val.startswith("http://") or source_val.startswith("https://"):
+            print(f"  → Downloading & overwriting remote asset [{key}]: {source_val} -> {dest_path}")
+            if self.download_asset(source_val, dest_path):
+                print(f"      ✔ [Force Overwrite] Successfully installed {dest_name}")
+            return
+
+        # 3. Check local file
+        src = os.path.join(self.base_dir, source_val.lstrip("./"))
+        if not os.path.exists(src) and "config/resources/" in source_val:
+            alt_src = os.path.join(self.base_dir, source_val.replace("config/resources/", "resources/").lstrip("./"))
+            if os.path.exists(alt_src):
+                src = alt_src
+
+        if os.path.exists(src):
+            if os.path.exists(dest_path):
+                try:
+                    os.remove(dest_path)
+                except Exception:
+                    pass
+            shutil.copy2(src, dest_path)
+            os.chmod(dest_path, 0o644)
+            print(f"  ✔ [Force Overwrite] Copied asset [{key}]: {os.path.basename(src)} -> {dest_path}")
+        else:
+            # 4. Fallback: Local file not packaged, fetch directly from GitHub OTA repository
+            clean_rel = source_val.lstrip("./")
+            remote_url = f"https://raw.githubusercontent.com/Hyggshi-OS-Research-Technology/Hyggshi-OS-Releases/main/hyggshi-os-ota/releases/{ver}/{clean_rel}"
+            print(f"  → Local asset '{clean_rel}' not found, fetching from OTA repository: {remote_url}")
+            if self.download_asset(remote_url, dest_path):
+                print(f"      ✔ [Force Overwrite] Successfully fetched and installed {dest_name} -> {dest_path}")
+            else:
+                print(f"      ❌ Could not install asset [{key}] to {dest_path}")
 
     def execute(self) -> None:
         self.parse()
@@ -181,7 +240,6 @@ class HclParser:
 
         print(f"\n{Colors.BOLD}[HCL/Package] Processing package directives...{Colors.NC}")
         for key, val in package_entries:
-            # Boolean packages: python = true, jq = true
             if isinstance(val, str) and val.lower() == "true":
                 pkg_name = key
                 if pkg_name == "python":
@@ -201,6 +259,35 @@ class HclParser:
 
                 elif func_name == "command":
                     print(f"  → Executing command [{key}]:")
+                    dl_url = args.get("download")
+                    if dl_url:
+                        filename = os.path.basename(dl_url.split("?")[0])
+                        downloads_dir = os.path.expanduser("~/Downloads")
+                        os.makedirs(downloads_dir, exist_ok=True)
+                        dest_file = os.path.join(downloads_dir, filename)
+                        print(f"      Downloading {filename}...")
+
+                        sudo_user = os.environ.get("SUDO_USER")
+                        user_dest = None
+                        if sudo_user:
+                            try:
+                                import pwd
+                                user_home = pwd.getpwnam(sudo_user).pw_dir
+                                user_dl = os.path.join(user_home, "Downloads")
+                                os.makedirs(user_dl, exist_ok=True)
+                                user_dest = os.path.join(user_dl, filename)
+                            except Exception:
+                                pass
+
+                        ret = subprocess.run(["curl", "-fsSL", dl_url, "-o", dest_file], check=False)
+                        if ret.returncode != 0:
+                            import urllib.request
+                            urllib.request.urlretrieve(dl_url, dest_file)
+
+                        if user_dest and os.path.exists(dest_file):
+                            shutil.copy2(dest_file, user_dest)
+                        print(f"      ✔ Downloaded to {dest_file}")
+
                     for ak, av in func_arg_list:
                         if ak == "run":
                             print(f"      $ {av}")
@@ -213,21 +300,7 @@ class HclParser:
                                 subprocess.run(["bash", cmd_file], check=False)
 
                 elif func_name == "copy":
-                    src = os.path.join(self.base_dir, args.get("source", "").lstrip("./"))
-                    # If src not found directly, check without config/ prefix
-                    if not os.path.exists(src) and "config/resources/" in args.get("source", ""):
-                        alt_src = os.path.join(self.base_dir, args.get("source", "").replace("config/resources/", "resources/").lstrip("./"))
-                        if os.path.exists(alt_src):
-                            src = alt_src
-
-                    target_dir = args.get("target", "")
-                    rename = args.get("rename", "")
-                    dest = os.path.join(target_dir, rename) if rename else target_dir
-
-                    if os.path.exists(src):
-                        os.makedirs(target_dir, exist_ok=True)
-                        shutil.copy2(src, dest)
-                        print(f"  → Copied asset: {os.path.basename(src)} -> {dest}")
+                    self.handle_copy(args, key, ver)
 
         if apt_packages_to_install:
             print(f"  → Installing declared APT packages: {', '.join(apt_packages_to_install)}")
@@ -245,15 +318,12 @@ class HclParser:
                     func_name = val.get("func")
                     args = dict(val.get("args", []))
                     if func_name == "copy":
-                        src = os.path.join(self.base_dir, args.get("source", "").lstrip("./"))
-                        target_dir = args.get("target", "")
-                        rename = args.get("rename", "")
-                        dest = os.path.join(target_dir, rename) if rename else target_dir
-
-                        if os.path.exists(src):
-                            os.makedirs(target_dir, exist_ok=True)
-                            shutil.copy2(src, dest)
-                            print(f"  → Installed customization: {os.path.basename(src)} -> {dest}")
+                        self.handle_copy(args, key, ver)
+                    elif func_name == "command":
+                        for ak, av in val.get("args", []):
+                            if ak == "run":
+                                print(f"      $ {av}")
+                                subprocess.run(av, shell=True, check=False)
 
         # 5. [compilers] Section
         comp_entries = self.raw_sections.get("compilers", [])
@@ -267,7 +337,6 @@ class HclParser:
                         file_rel = args.get("file", "").lstrip("./")
                         target_script = os.path.join(self.base_dir, file_rel)
 
-                        # Check fallback path if resources/hyggshi-extensions-welcome vs resources/hyggshi-welcome
                         if not os.path.isfile(target_script) and "hyggshi-extensions-welcome" in file_rel:
                             alt_rel = file_rel.replace("hyggshi-extensions-welcome", "hyggshi-welcome")
                             alt_path = os.path.join(self.base_dir, alt_rel)
