@@ -5,7 +5,7 @@
 # ==============================================================================
 set -euo pipefail
 
-VERSION="1.4.10"
+VERSION="1.0.1"
 CONFIG_FILE="/etc/hyggshi-ota.conf"
 RELEASE_FILE="/etc/hyggshi-release"
 LOCAL_RUN_DIR="/tmp/hyggshi-ota-run"
@@ -44,17 +44,114 @@ log_msg() {
     fi
 }
 
+# JSON Helpers with fallback (jq -> python3 -> sed/grep)
+json_val() {
+    local key="$1"
+    local file="$2"
+    local default_val="${3:-}"
+
+    if command -v jq >/dev/null 2>&1; then
+        local res
+        res=$(jq -r ".$key // empty" "$file" 2>/dev/null || true)
+        if [ -n "$res" ] && [ "$res" != "null" ]; then
+            echo "$res"
+            return
+        fi
+    elif command -v python3 >/dev/null 2>&1; then
+        local res
+        res=$(python3 -c "
+import json, sys
+try:
+    with open('$file', 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    val = data.get('$key', '')
+    if val is not None and val != '':
+        print(val)
+except:
+    pass
+" 2>/dev/null || true)
+        if [ -n "$res" ] && [ "$res" != "null" ]; then
+            echo "$res"
+            return
+        fi
+    else
+        local res
+        res=$(grep -oE "\"$key\"[[:space:]]*:[[:space:]]*(\"[^\"]+\"|[0-9]+|true|false)" "$file" 2>/dev/null | head -n1 | sed -E "s/\"$key\"[[:space:]]*:[[:space:]]*\"?([^\" ]+)\"?/\1/" || true)
+        if [ -n "$res" ] && [ "$res" != "null" ]; then
+            echo "$res"
+            return
+        fi
+    fi
+    echo "$default_val"
+}
+
+json_array() {
+    local key="$1"
+    local file="$2"
+
+    if command -v jq >/dev/null 2>&1; then
+        jq -r ".$key[]? // empty" "$file" 2>/dev/null || true
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -c "
+import json, sys
+try:
+    with open('$file', 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    arr = data.get('$key', [])
+    if isinstance(arr, list):
+        for item in arr:
+            if isinstance(item, str):
+                print(item)
+except:
+    pass
+" 2>/dev/null || true
+    fi
+}
+
+json_migration_script() {
+    local from_ver="$1"
+    local file="$2"
+
+    if command -v jq >/dev/null 2>&1; then
+        local res
+        res=$(jq -r --arg from "$from_ver" '.migrations[]? | select(.from == $from) | .script' "$file" 2>/dev/null | head -n1)
+        if [ -z "$res" ] || [ "$res" = "null" ]; then
+            res=$(jq -r '.migrations[0]?.script // empty' "$file" 2>/dev/null || true)
+        fi
+        echo "$res"
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -c "
+import json, sys
+try:
+    with open('$file', 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    migs = data.get('migrations', [])
+    chosen = ''
+    for m in migs:
+        if m.get('from') == '$from_ver':
+            chosen = m.get('script', '')
+            break
+    if not chosen and len(migs) > 0:
+        chosen = migs[0].get('script', '')
+    if chosen:
+        print(chosen)
+except:
+    pass
+" 2>/dev/null || true
+    fi
+}
+
 # Read current OS release properties
 get_current_info() {
     if [ ! -f "$RELEASE_FILE" ]; then
-        echo -e "${YELLOW}⚠ $RELEASE_FILE not found, using default configuration (1.5.0)...${NC}" >&2
-        CURRENT_VERSION="1.5.0"
+        echo -e "${YELLOW}⚠ $RELEASE_FILE not found, using default configuration (1.4.1)...${NC}" >&2
+        CURRENT_VERSION="1.4.1"
         CURRENT_NAME="Hyggshi OS"
-        CURRENT_CODENAME="Breeze"
+        CURRENT_CODENAME="Verdant Valley"
     else
         # shellcheck disable=SC1090
         source "$RELEASE_FILE"
-        CURRENT_VERSION="${VERSION:-${VERSION_ID:-1.5.0}}"
+        CURRENT_VERSION="${VERSION:-${VERSION_ID:-1.4.1}}"
         CURRENT_NAME="${NAME:-Hyggshi OS}"
         CURRENT_CODENAME="${VERSION_CODENAME:-Unknown}"
     fi
@@ -126,18 +223,18 @@ cmd_check() {
     local meta_tmp="$LOCAL_RUN_DIR/channel_meta.json"
 
     if ! fetch_resource "metadata/${CHANNEL}.json" "$meta_tmp" 2>/dev/null; then
-        echo -e "${RED} Failed to fetch channel metadata from: ${OTA_REPO_URL}/metadata/${CHANNEL}.json${NC}"
+        echo -e "${RED}❌ Failed to fetch channel metadata from: ${OTA_REPO_URL}/metadata/${CHANNEL}.json${NC}"
         return 1
     fi
 
-    LATEST_VERSION=$(jq -r '.latest_version // empty' "$meta_tmp")
-    MIN_SUPPORTED=$(jq -r '.min_supported_version // empty' "$meta_tmp")
-    ANNOUNCEMENT=$(jq -r '.announcement // empty' "$meta_tmp")
-    WARNING=$(jq -r '.warning // empty' "$meta_tmp")
-    MANDATORY=$(jq -r '.mandatory // false' "$meta_tmp")
+    LATEST_VERSION=$(json_val "latest_version" "$meta_tmp")
+    MIN_SUPPORTED=$(json_val "min_supported_version" "$meta_tmp")
+    ANNOUNCEMENT=$(json_val "announcement" "$meta_tmp")
+    WARNING=$(json_val "warning" "$meta_tmp")
+    MANDATORY=$(json_val "mandatory" "$meta_tmp" "false")
 
     if [ -z "$LATEST_VERSION" ]; then
-        echo -e "${RED} Invalid metadata received!${NC}"
+        echo -e "${RED}❌ Invalid metadata received!${NC}"
         return 1
     fi
 
@@ -156,17 +253,19 @@ cmd_check() {
     # Check semver comparison
     if semver_is_newer "$CURRENT_VERSION" "$LATEST_VERSION"; then
         echo ""
-        echo -e "${GREEN}${BOLD} New update available: Hyggshi OS $LATEST_VERSION!${NC}"
+        echo -e "${GREEN}${BOLD}✨ New update available: Hyggshi OS $LATEST_VERSION!${NC}"
         
         # Fetch release manifest for changelog
         local rel_manifest="$LOCAL_RUN_DIR/release_${LATEST_VERSION}.json"
         if fetch_resource "releases/${LATEST_VERSION}/release.json" "$rel_manifest" 2>/dev/null; then
             local codename
-            codename=$(jq -r '.codename // empty' "$rel_manifest")
+            codename=$(json_val "codename" "$rel_manifest")
             echo -e "  • Codename: ${BOLD}${codename}${NC}"
             echo -e "  • Highlights:"
-            jq -r '.changelog[]? // empty' "$rel_manifest" | while read -r line; do
-                echo -e "    ${GREEN}+${NC} $line"
+            json_array "changelog" "$rel_manifest" | while read -r line; do
+                if [ -n "$line" ]; then
+                    echo -e "    ${GREEN}+${NC} $line"
+                fi
             done
         fi
 
@@ -184,12 +283,12 @@ cmd_check() {
 # Command: Upgrade
 cmd_upgrade() {
     if [ "$(id -u)" -ne 0 ]; then
-        echo -e "${RED} Error: Superuser privileges (root or sudo) required for system upgrade!${NC}"
+        echo -e "${RED}❌ Error: Superuser privileges (root or sudo) required for system upgrade!${NC}"
         exit 1
     fi
 
     get_current_info
-    echo -e " Starting Hyggshi OS OTA upgrade process..."
+    echo -e "🚀 Starting Hyggshi OS OTA upgrade process..."
     echo -e "  • Current Version  : ${BOLD}${CURRENT_VERSION}${NC}"
     echo -e "  • Target Channel   : ${YELLOW}${CHANNEL}${NC}"
 
@@ -197,12 +296,12 @@ cmd_upgrade() {
     local meta_tmp="$LOCAL_RUN_DIR/channel_meta.json"
 
     if ! fetch_resource "metadata/${CHANNEL}.json" "$meta_tmp" 2>/dev/null; then
-        echo -e "${RED} Failed to fetch metadata from OTA repository.${NC}"
+        echo -e "${RED}❌ Failed to fetch metadata from OTA repository.${NC}"
         exit 1
     fi
 
     local target_ver
-    target_ver=$(jq -r '.latest_version // empty' "$meta_tmp")
+    target_ver=$(json_val "latest_version" "$meta_tmp")
 
     if [ "$FORCE" != "true" ] && ! semver_is_newer "$CURRENT_VERSION" "$target_ver"; then
         echo -e "${GREEN}✔ System is already on latest version ($CURRENT_VERSION). No upgrade needed.${NC}"
@@ -210,24 +309,26 @@ cmd_upgrade() {
         exit 0
     fi
 
-    echo -e " Target Version  : ${GREEN}${BOLD}${target_ver}${NC}"
+    echo -e "🎯 Target Version  : ${GREEN}${BOLD}${target_ver}${NC}"
 
     # Fetch release manifest
     local rel_manifest="$LOCAL_RUN_DIR/release_${target_ver}.json"
     if ! fetch_resource "releases/${target_ver}/release.json" "$rel_manifest" 2>/dev/null; then
-        echo -e "${RED} Release manifest (release.json) not found for version $target_ver!${NC}"
+        echo -e "${RED}❌ Release manifest (release.json) not found for version $target_ver!${NC}"
         exit 1
     fi
 
     local target_codename
-    target_codename=$(jq -r '.codename // "Update"' "$rel_manifest")
+    target_codename=$(json_val "codename" "$rel_manifest" "Update")
     local requires_reboot
-    requires_reboot=$(jq -r '.requires_reboot // false' "$rel_manifest")
+    requires_reboot=$(json_val "requires_reboot" "$rel_manifest" "false")
 
     echo ""
-    echo -e "${CYAN}${BOLD} Release Summary for Hyggshi OS ${target_ver} (${target_codename}):${NC}"
-    jq -r '.changelog[]? // empty' "$rel_manifest" | while read -r line; do
-        echo -e "  * $line"
+    echo -e "${CYAN}${BOLD}📋 Release Summary for Hyggshi OS ${target_ver} (${target_codename}):${NC}"
+    json_array "changelog" "$rel_manifest" | while read -r line; do
+        if [ -n "$line" ]; then
+            echo -e "  * $line"
+        fi
     done
     echo ""
 
@@ -243,7 +344,7 @@ cmd_upgrade() {
 
     # Step 1: Execute Pre-upgrade script if defined
     local pre_script_rel
-    pre_script_rel=$(jq -r '.pre_upgrade_script // empty' "$rel_manifest")
+    pre_script_rel=$(json_val "pre_upgrade_script" "$rel_manifest")
     if [ -n "$pre_script_rel" ] && [ "$pre_script_rel" != "null" ]; then
         echo -e "\n${BOLD}[1/5] Running pre-upgrade validation checks...${NC}"
         local pre_script_local="$LOCAL_RUN_DIR/pre-upgrade.sh"
@@ -258,11 +359,7 @@ cmd_upgrade() {
     # Step 2: Locate and execute Migration script
     echo -e "\n${BOLD}[2/5] Locating and executing version migration script...${NC}"
     local migration_script_rel
-    migration_script_rel=$(jq -r --arg from "$CURRENT_VERSION" '.migrations[]? | select(.from == $from) | .script' "$rel_manifest" | head -n1)
-
-    if [ -z "$migration_script_rel" ] || [ "$migration_script_rel" = "null" ]; then
-        migration_script_rel=$(jq -r '.migrations[0]?.script // empty' "$rel_manifest")
-    fi
+    migration_script_rel=$(json_migration_script "$CURRENT_VERSION" "$rel_manifest")
 
     if [ -n "$migration_script_rel" ] && [ "$migration_script_rel" != "null" ]; then
         echo -e "  → Executing migration: ${migration_script_rel}"
@@ -289,7 +386,7 @@ cmd_upgrade() {
 
     # Step 4: Execute Post-upgrade script if defined
     local post_script_rel
-    post_script_rel=$(jq -r '.post_upgrade_script // empty' "$rel_manifest")
+    post_script_rel=$(json_val "post_upgrade_script" "$rel_manifest")
     if [ -n "$post_script_rel" ] && [ "$post_script_rel" != "null" ]; then
         echo -e "\n${BOLD}[4/5] Running post-upgrade finalizing script...${NC}"
         local post_script_local="$LOCAL_RUN_DIR/post-upgrade.sh"
@@ -324,7 +421,7 @@ EOF
     log_msg "Upgrade completed successfully from $CURRENT_VERSION -> $target_ver."
 
     echo ""
-    echo -e "${GREEN}${BOLD} CONGRATULATIONS! SYSTEM SUCCESSFULLY UPGRADED TO HYGGSHI OS ${target_ver} (${target_codename})!${NC}"
+    echo -e "${GREEN}${BOLD}🎉 CONGRATULATIONS! SYSTEM SUCCESSFULLY UPGRADED TO HYGGSHI OS ${target_ver} (${target_codename})!${NC}"
     if [ "$requires_reboot" = "true" ]; then
         echo -e "${YELLOW}${BOLD}⚠ A system restart is recommended to complete the upgrade.${NC}"
         echo -e "Reboot now: ${BOLD}sudo reboot${NC}"
@@ -343,12 +440,12 @@ cmd_channel() {
     fi
 
     if [[ ! "$target_ch" =~ ^(stable|beta|testing)$ ]]; then
-        echo -e "${RED} Invalid channel: $target_ch. Allowed: stable, beta, testing.${NC}"
+        echo -e "${RED}❌ Invalid channel: $target_ch. Allowed: stable, beta, testing.${NC}"
         exit 1
     fi
 
     if [ "$(id -u)" -ne 0 ]; then
-        echo -e "${RED} Root privileges required to change update channel in $CONFIG_FILE!${NC}"
+        echo -e "${RED}❌ Root privileges required to change update channel in $CONFIG_FILE!${NC}"
         exit 1
     fi
 

@@ -7,7 +7,7 @@
 set -euo pipefail
 
 if [ "$(id -u)" -ne 0 ]; then
-    echo "Please run the installer with superuser privileges (sudo ./install.sh or curl ... | sudo bash)"
+    echo "❌ Please run the installer with superuser privileges (sudo ./install.sh or curl ... | sudo bash)"
     exit 1
 fi
 
@@ -34,6 +34,14 @@ fetch_install_file() {
 }
 
 echo "==> Installing Hyggshi OS OTA Client..."
+
+# 0. Ensure required dependencies (jq, curl)
+if ! command -v jq >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+    echo "  [0/4] Installing required system tools (jq, curl)..."
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq || true
+    apt-get install -y -qq jq curl 2>/dev/null || true
+fi
 
 # 1. Install CLI binary
 echo "  [1/4] Installing hyggshi-ota CLI tool to /usr/local/bin/..."
@@ -68,7 +76,7 @@ else
 fi
 
 echo ""
-echo "Hyggshi OS OTA Client installed successfully!"
+echo "✅ Hyggshi OS OTA Client installed successfully!"
 echo ""
 echo "Quick Commands:"
 echo "  hyggshi-ota status       # View system release and update channel"
