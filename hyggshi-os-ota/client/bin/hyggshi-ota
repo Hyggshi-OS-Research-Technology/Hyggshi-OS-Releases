@@ -143,18 +143,31 @@ except:
 
 # Read current OS release properties
 get_current_info() {
-    if [ ! -f "$RELEASE_FILE" ]; then
-        echo -e "${YELLOW}⚠ $RELEASE_FILE not found, using default configuration (1.4.1)...${NC}" >&2
-        CURRENT_VERSION="1.4.1"
-        CURRENT_NAME="Hyggshi OS"
-        CURRENT_CODENAME="Verdant Valley"
-    else
+    # 1. Prefer reading directly from /etc/os-release if present (official distro release file)
+    if [ -f "/etc/os-release" ]; then
+        local os_ver
+        os_ver=$(grep -E '^VERSION_ID=' /etc/os-release | head -n1 | cut -d'=' -f2 | tr -d '"'\'' ')
+        local os_codename
+        os_codename=$(grep -E '^VERSION_CODENAME=' /etc/os-release | head -n1 | cut -d'=' -f2 | tr -d '"'\'' ')
+        if [ -n "$os_ver" ]; then
+            CURRENT_VERSION="$os_ver"
+            CURRENT_NAME="Hyggshi OS"
+            CURRENT_CODENAME="${os_codename:-Verdant Valley}"
+        fi
+    fi
+
+    # 2. Read /etc/hyggshi-release if available
+    if [ -f "$RELEASE_FILE" ]; then
         # shellcheck disable=SC1090
         source "$RELEASE_FILE"
-        CURRENT_VERSION="${VERSION:-${VERSION_ID:-1.4.1}}"
-        CURRENT_NAME="${NAME:-Hyggshi OS}"
-        CURRENT_CODENAME="${VERSION_CODENAME:-Unknown}"
+        CURRENT_VERSION="${VERSION:-${VERSION_ID:-${CURRENT_VERSION:-1.4.0}}}"
+        CURRENT_NAME="${NAME:-${CURRENT_NAME:-Hyggshi OS}}"
+        CURRENT_CODENAME="${VERSION_CODENAME:-${CURRENT_CODENAME:-Unknown}}"
     fi
+
+    CURRENT_VERSION="${CURRENT_VERSION:-1.4.0}"
+    CURRENT_NAME="${CURRENT_NAME:-Hyggshi OS}"
+    CURRENT_CODENAME="${CURRENT_CODENAME:-Verdant Valley}"
 }
 
 # Fetch resources (supports HTTP/HTTPS URLs, file:///, or local directories)
@@ -398,13 +411,13 @@ cmd_upgrade() {
         echo -e "\n${BOLD}[4/5] Skipping post-upgrade tasks.${NC}"
     fi
 
-    # Step 5: Update /etc/hyggshi-release
+    # Step 5: Update /etc/hyggshi-release and sync /etc/os-release
     echo -e "\n${BOLD}[5/5] Updating OS release identification metadata...${NC}"
     local build_today
     build_today=$(date '+%Y%m%d')
 
     cat <<EOF > "$RELEASE_FILE"
-ID=hyggshi
+ID=hyggshios
 NAME="Hyggshi OS"
 PRETTY_NAME="Hyggshi OS ${target_ver} (${target_codename})"
 VERSION="${target_ver}"
@@ -416,6 +429,16 @@ HOME_URL="https://github.com/Hyggshi-OS-Research-Technology/Hyggshi-OS-Releases"
 SUPPORT_URL="https://github.com/Hyggshi-OS-Research-Technology/Hyggshi-OS-Releases/issues"
 BUG_REPORT_URL="https://github.com/Hyggshi-OS-Research-Technology/Hyggshi-OS-Releases/issues"
 EOF
+
+    # Sync into /etc/os-release if present
+    if [ -f "/etc/os-release" ]; then
+        sed -i -E "s/^VERSION_ID=.*/VERSION_ID=\"${target_ver}\"/" /etc/os-release
+        sed -i -E "s/^VERSION=.*/VERSION=\"${target_ver} (${target_codename}) (Debian trixie)\"/" /etc/os-release
+        sed -i -E "s/^PRETTY_NAME=.*/PRETTY_NAME=\"Hyggshi OS ${target_ver} ${target_codename} Debian Edition\"/" /etc/os-release
+        sed -i -E "s/^NAME=.*/NAME=\"Hyggshi OS ${target_ver} ${target_codename} Debian Edition\"/" /etc/os-release
+        sed -i -E "s/^VERSION_CODENAME=.*/VERSION_CODENAME=\"${target_codename}\"/" /etc/os-release
+        echo "  ✔ Synchronized updates to /etc/os-release!"
+    fi
 
     echo "  ✔ Successfully updated $RELEASE_FILE!"
     log_msg "Upgrade completed successfully from $CURRENT_VERSION -> $target_ver."
