@@ -4,10 +4,9 @@
   "release_date": "2026-09-24",
   "min_supported_version": "1.4.0",
   "changelog": [
-    "Next-generation Hyggshi OS foundation initialization",
-    "Integration with Hyggshi APT repository base packages",
-    "Standardized desktop environment and system service manager"
+    "Optimize the automatic OTA system and fix some bugs flatpack and flathub."
   ],
+  "post_upgrade_script": "scripts/post-upgrade-1.4.1.sh",
   "requires_reboot": true,
   "migrations": []
 }
