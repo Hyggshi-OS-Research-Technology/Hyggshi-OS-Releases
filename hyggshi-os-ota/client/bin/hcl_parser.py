@@ -198,6 +198,96 @@ class HclParser:
             else:
                 print(f"      ❌ Could not install asset [{key}] to {dest_path}")
 
+    def detect_desktop_environment(self) -> str:
+        """
+        Auto-detect current active Desktop Environment:
+        xfce, gnome, kde, cinnamon, mate, lxqt, or cli
+        """
+        # 1. Environment variables
+        for var in ["XDG_CURRENT_DESKTOP", "DESKTOP_SESSION", "GDMSESSION", "XDG_SESSION_DESKTOP"]:
+            val = os.environ.get(var, "")
+            if val:
+                val_l = val.lower()
+                for de in ["xfce", "gnome", "kde", "plasma", "cinnamon", "mate", "lxqt"]:
+                    if de in val_l:
+                        return "kde" if de == "plasma" else de
+
+        # 2. Inspect active GUI processes
+        try:
+            ps_out = subprocess.check_output(["ps", "-A", "-o", "comm="], text=True, stderr=subprocess.DEVNULL)
+            procs = set(ps_out.strip().split())
+            if "xfce4-session" in procs:
+                return "xfce"
+            if any(p in procs for p in ["gnome-shell", "gnome-session", "gnome-session-b"]):
+                return "gnome"
+            if any(p in procs for p in ["plasmashell", "kwin_x11", "kwin_wayland", "startplasma-x11", "startplasma"]):
+                return "kde"
+            if any(p in procs for p in ["cinnamon-sessio", "cinnamon-session", "cinnamon"]):
+                return "cinnamon"
+            if "mate-session" in procs:
+                return "mate"
+            if "lxqt-session" in procs:
+                return "lxqt"
+        except Exception:
+            pass
+
+        # 3. Check sudo user session via loginctl
+        sudo_user = os.environ.get("SUDO_USER")
+        if sudo_user:
+            try:
+                sessions_out = subprocess.check_output(["loginctl", "list-sessions", "--no-legend"], text=True, stderr=subprocess.DEVNULL)
+                for line in sessions_out.strip().splitlines():
+                    parts = line.split()
+                    if len(parts) >= 3 and parts[2] == sudo_user:
+                        sess_id = parts[0]
+                        show_out = subprocess.check_output(["loginctl", "show-session", sess_id, "-p", "Desktop"], text=True, stderr=subprocess.DEVNULL)
+                        for sline in show_out.splitlines():
+                            if sline.startswith("Desktop="):
+                                dval = sline.split("=", 1)[1].lower()
+                                for de in ["xfce", "gnome", "kde", "plasma", "cinnamon", "mate", "lxqt"]:
+                                    if de in dval:
+                                        return "kde" if de == "plasma" else de
+            except Exception:
+                pass
+
+        # 4. Check default session symlink in /etc/alternatives
+        if os.path.exists("/etc/alternatives/x-session-manager"):
+            try:
+                target = os.path.realpath("/etc/alternatives/x-session-manager").lower()
+                for de in ["xfce", "gnome", "kde", "plasma", "cinnamon", "mate", "lxqt"]:
+                    if de in target:
+                        return "kde" if de == "plasma" else de
+            except Exception:
+                pass
+
+        # 5. Check installed binaries in PATH
+        for b, de in [("xfce4-session", "xfce"), ("gnome-shell", "gnome"), ("plasmashell", "kde"),
+                      ("cinnamon-session", "cinnamon"), ("mate-session", "mate"), ("lxqt-session", "lxqt")]:
+            if shutil.which(b):
+                return de
+
+        return "cli"
+
+    def is_de_allowed(self, args: dict, active_de: str) -> tuple[bool, str]:
+        """
+        Check whether an HCL component is allowed to run under the active DE.
+        Returns (is_allowed, reason_if_skipped).
+        """
+        target_de = args.get("de", "all").strip().lower()
+        exclude_de = args.get("exclude_de", "").strip().lower()
+
+        if target_de != "all":
+            allowed = [d.strip() for d in target_de.split(",") if d.strip()]
+            if "all" not in allowed and active_de not in allowed:
+                return False, f"target DE is '{target_de}', active system DE is '{active_de}'"
+
+        if exclude_de:
+            excluded = [d.strip() for d in exclude_de.split(",") if d.strip()]
+            if active_de in excluded:
+                return False, f"active DE '{active_de}' is excluded by ({exclude_de})"
+
+        return True, ""
+
     def execute(self) -> None:
         self.parse()
 
@@ -216,12 +306,27 @@ class HclParser:
         self.variables["codename"] = codename
         resolved_name = self.resolve_vars(name_template)
 
+        # 2. Desktop Environment Resolution
+        detected_de = self.detect_desktop_environment()
+        de_entries = dict(self.raw_sections.get("Desktop-Environment", []))
+        auto_detect = de_entries.get("auto-detect", "true").lower() == "true"
+        target_cfg = de_entries.get("target", "auto").strip().lower()
+
+        if not auto_detect and target_cfg != "auto" and target_cfg:
+            active_de = target_cfg
+        else:
+            active_de = detected_de
+
+        self.variables["CURRENT_DE"] = active_de
+        self.variables["DETECTED_DE"] = detected_de
+
         print(f"{Colors.BOLD}Target Release Profile:{Colors.NC}")
         print(f"  • Version : {Colors.GREEN}{ver}{Colors.NC}")
         print(f"  • Codename: {Colors.GREEN}{codename}{Colors.NC}")
+        print(f"  • Desktop : {Colors.GREEN}{active_de}{Colors.NC} (Detected: {detected_de}, Auto-detect: {'enabled' if auto_detect else 'disabled'})")
         print(f"  • Fullname: {Colors.GREEN}{resolved_name}{Colors.NC}\n")
 
-        # 2. [ota] Section checks
+        # 3. [ota] Section checks
         ota_entries = dict(self.raw_sections.get("ota", []))
         if ota_entries.get("check-disk-space", "false").lower() == "true":
             print(f"{Colors.BOLD}[HCL/OTA] Validating disk space...{Colors.NC}")
@@ -261,6 +366,11 @@ class HclParser:
                 func_name = val.get("func")
                 args = dict(val.get("args", []))
                 func_arg_list = val.get("args", [])
+
+                allowed, reason = self.is_de_allowed(args, active_de)
+                if not allowed:
+                    print(f"  ⏭ Skipping [{key}] ({reason})")
+                    continue
 
                 if func_name == "install-web":
                     print(f"  → Executing install-web component [{key}]:")
@@ -302,7 +412,14 @@ class HclParser:
                             urllib.request.urlretrieve(dl_url, dest_file)
 
                         if user_dest and os.path.exists(dest_file):
-                            shutil.copy2(dest_file, user_dest)
+                            try:
+                                shutil.copy2(dest_file, user_dest)
+                                if sudo_user:
+                                    import pwd
+                                    pw = pwd.getpwnam(sudo_user)
+                                    os.chown(user_dest, pw.pw_uid, pw.pw_gid)
+                            except Exception:
+                                pass
                         print(f"      ✔ Downloaded to {dest_file}")
 
                     for ak, av in func_arg_list:
@@ -327,6 +444,11 @@ class HclParser:
                 if isinstance(val, dict) and val.get("type") == "function":
                     func_name = val.get("func")
                     args = dict(val.get("args", []))
+                    allowed, reason = self.is_de_allowed(args, active_de)
+                    if not allowed:
+                        print(f"  ⏭ Skipping [{key}] ({reason})")
+                        continue
+
                     if func_name == "copy":
                         self.handle_copy(args, key, ver)
                     elif func_name == "command":
@@ -343,6 +465,10 @@ class HclParser:
                 if isinstance(val, dict) and val.get("type") == "function":
                     func_name = val.get("func")
                     args = dict(val.get("args", []))
+                    allowed, reason = self.is_de_allowed(args, active_de)
+                    if not allowed:
+                        print(f"  ⏭ Skipping [{key}] ({reason})")
+                        continue
                     if func_name == "command" and args.get("action") == "run":
                         file_rel = args.get("file", "").lstrip("./")
                         target_script = os.path.join(self.base_dir, file_rel)

@@ -142,11 +142,60 @@ except:
 }
 
 # Read current OS release properties directly from /etc/os-release (Standard FHS)
+detect_current_de() {
+    # 1. Environment variables
+    local env_de="${XDG_CURRENT_DESKTOP:-${DESKTOP_SESSION:-}}"
+    if [ -n "$env_de" ]; then
+        local env_lower=$(echo "$env_de" | tr '[:upper:]' '[:lower:]')
+        case "$env_lower" in
+            *xfce*) echo "xfce"; return ;;
+            *gnome*) echo "gnome"; return ;;
+            *plasma*|*kde*) echo "kde"; return ;;
+            *cinnamon*) echo "cinnamon"; return ;;
+            *mate*) echo "mate"; return ;;
+            *lxqt*) echo "lxqt"; return ;;
+        esac
+    fi
+
+    # 2. Running processes
+    if pgrep -x "xfce4-session" >/dev/null 2>&1; then echo "xfce"; return; fi
+    if pgrep -x "gnome-shell" >/dev/null 2>&1 || pgrep -x "gnome-session" >/dev/null 2>&1; then echo "gnome"; return; fi
+    if pgrep -x "plasmashell" >/dev/null 2>&1 || pgrep -x "kwin_x11" >/dev/null 2>&1; then echo "kde"; return; fi
+    if pgrep -x "cinnamon-session" >/dev/null 2>&1 || pgrep -x "cinnamon" >/dev/null 2>&1; then echo "cinnamon"; return; fi
+    if pgrep -x "mate-session" >/dev/null 2>&1; then echo "mate"; return; fi
+    if pgrep -x "lxqt-session" >/dev/null 2>&1; then echo "lxqt"; return; fi
+
+    # 3. Alternatives / Default
+    if [ -e "/etc/alternatives/x-session-manager" ]; then
+        local alt_mgr
+        alt_mgr=$(readlink -f /etc/alternatives/x-session-manager 2>/dev/null || true)
+        case "$(echo "$alt_mgr" | tr '[:upper:]' '[:lower:]')" in
+            *xfce*) echo "xfce"; return ;;
+            *gnome*) echo "gnome"; return ;;
+            *plasma*|*kde*) echo "kde"; return ;;
+            *cinnamon*) echo "cinnamon"; return ;;
+            *mate*) echo "mate"; return ;;
+            *lxqt*) echo "lxqt"; return ;;
+        esac
+    fi
+
+    # 4. Installed desktop binaries
+    if command -v xfce4-session >/dev/null 2>&1; then echo "xfce"; return; fi
+    if command -v gnome-shell >/dev/null 2>&1; then echo "gnome"; return; fi
+    if command -v plasmashell >/dev/null 2>&1; then echo "kde"; return; fi
+    if command -v cinnamon-session >/dev/null 2>&1; then echo "cinnamon"; return; fi
+    if command -v mate-session >/dev/null 2>&1; then echo "mate"; return; fi
+    if command -v lxqt-session >/dev/null 2>&1; then echo "lxqt"; return; fi
+
+    echo "cli"
+}
+
 get_current_info() {
     CURRENT_ID="hyggshios"
     CURRENT_VERSION=""
     CURRENT_NAME="Hyggshi OS"
     CURRENT_CODENAME="Verdant Valley"
+    CURRENT_DE="$(detect_current_de)"
 
     # 1. Primary Source: /etc/os-release (Official System ID and Version)
     if [ -f "/etc/os-release" ]; then
@@ -222,6 +271,7 @@ cmd_status() {
     get_current_info
     echo -e "${BOLD}Hyggshi OS System Status:${NC}"
     echo -e "  • Operating System  : ${GREEN}${CURRENT_NAME}${NC}"
+    echo -e "  • Desktop Env       : ${GREEN}${CURRENT_DE}${NC}"
     echo -e "  • OS ID (ID)        : ${CYAN}${CURRENT_ID}${NC}"
     echo -e "  • Current Version   : ${CYAN}${BOLD}${CURRENT_VERSION}${NC} (${CURRENT_CODENAME})"
     echo -e "  • Update Channel    : ${YELLOW}${CHANNEL}${NC}"
@@ -307,6 +357,7 @@ cmd_upgrade() {
     get_current_info
     echo -e "🚀 Starting Hyggshi OS OTA upgrade process..."
     echo -e "  • Current Version  : ${BOLD}${CURRENT_VERSION}${NC}"
+    echo -e "  • Desktop Env      : ${GREEN}${CURRENT_DE}${NC}"
     echo -e "  • Target Channel   : ${YELLOW}${CHANNEL}${NC}"
 
     mkdir -p "$LOCAL_RUN_DIR"
