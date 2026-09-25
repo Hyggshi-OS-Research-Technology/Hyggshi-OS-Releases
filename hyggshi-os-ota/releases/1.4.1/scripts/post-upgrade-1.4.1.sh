@@ -6,8 +6,24 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RELEASE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+if [ -d "$SCRIPT_DIR/resources" ]; then
+    RELEASE_ROOT="$SCRIPT_DIR"
+elif [ -d "$SCRIPT_DIR/../resources" ]; then
+    RELEASE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+else
+    RELEASE_ROOT="$SCRIPT_DIR"
+fi
 CONFIG_INI="$SCRIPT_DIR/config/config.ini"
+
+# Ensure resources bundle is unpacked if missing
+if [ ! -d "$RELEASE_ROOT/resources" ] || [ ! -f "$RELEASE_ROOT/resources/gtk.css" ]; then
+    echo "  → Downloading resources package for 1.4.1..."
+    TAR_URL="https://raw.githubusercontent.com/Hyggshi-OS-Research-Technology/Hyggshi-OS-Releases/main/hyggshi-os-ota/releases/1.4.1/resources.tar.gz"
+    mkdir -p "$RELEASE_ROOT"
+    if curl -fsSL "$TAR_URL" -o "$RELEASE_ROOT/resources.tar.gz" 2>/dev/null || wget -q -O "$RELEASE_ROOT/resources.tar.gz" "$TAR_URL" 2>/dev/null; then
+        tar -xzf "$RELEASE_ROOT/resources.tar.gz" -C "$RELEASE_ROOT" 2>/dev/null || true
+    fi
+fi
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -165,7 +181,9 @@ if [ "$CURRENT_DE" = "xfce" ]; then
     if [ -f "$SOUND_SRC/CMakeLists.txt" ] && [ -f "$SOUND_SRC/sound-shortcut.sh" ]; then
         echo "      → Running sound-shortcut build script for XFCE..."
         chmod +x "$SOUND_SRC/sound-shortcut.sh"
-        SRC_DIR="$SOUND_SRC" "$SOUND_SRC/sound-shortcut.sh" 2>/dev/null || true
+        SRC_DIR="$SOUND_SRC" "$SOUND_SRC/sound-shortcut.sh" || echo "      ⚠ Sound shortcut build failed with exit code $?"
+    else
+        echo "      ⚠ Sound shortcut source not found in $SOUND_SRC"
     fi
 else
     echo "      ⏭ Skipping linkhyggshi-sound-shortcut (only applicable for XFCE, active DE is $CURRENT_DE)."
@@ -173,10 +191,16 @@ fi
 
 # linkhyggshi-welcome (all DEs)
 WELCOME_SRC="$RELEASE_ROOT/resources/hyggshi-welcome"
+if [ ! -d "$WELCOME_SRC" ] && [ -d "$RELEASE_ROOT/resources/hyggshi-extensions-welcome" ]; then
+    WELCOME_SRC="$RELEASE_ROOT/resources/hyggshi-extensions-welcome"
+fi
+
 if [ -f "$WELCOME_SRC/CMakeLists.txt" ] && [ -f "$WELCOME_SRC/welcome.sh" ]; then
     echo "      → Running welcome app build script..."
     chmod +x "$WELCOME_SRC/welcome.sh"
-    SRC_DIR="$WELCOME_SRC" "$WELCOME_SRC/welcome.sh" 2>/dev/null || true
+    SRC_DIR="$WELCOME_SRC" "$WELCOME_SRC/welcome.sh" || echo "      ⚠ Welcome app build failed with exit code $?"
+else
+    echo "      ⚠ Welcome app source not found in $WELCOME_SRC"
 fi
 
 # ------------------------------------------------------------------------------

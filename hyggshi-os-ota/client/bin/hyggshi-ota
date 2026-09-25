@@ -8,7 +8,20 @@ set -euo pipefail
 VERSION="1.0.1"
 CONFIG_FILE="/etc/hyggshi-ota.conf"
 RELEASE_FILE="/etc/hyggshi-release"
-LOCAL_RUN_DIR="/tmp/hyggshi-ota-run"
+
+# Working directory setup (safe for both root and non-root users)
+if [ "${EUID:-$(id -u)}" -eq 0 ]; then
+    LOCAL_RUN_DIR="/tmp/hyggshi-ota-run"
+    mkdir -p "$LOCAL_RUN_DIR" 2>/dev/null || true
+    chmod 1777 "$LOCAL_RUN_DIR" 2>/dev/null || true
+else
+    if [ -d "/tmp/hyggshi-ota-run" ] && [ -w "/tmp/hyggshi-ota-run" ]; then
+        LOCAL_RUN_DIR="/tmp/hyggshi-ota-run"
+    else
+        LOCAL_RUN_DIR="/tmp/hyggshi-ota-run-${EUID:-$(id -u)}"
+    fi
+fi
+mkdir -p "$LOCAL_RUN_DIR" 2>/dev/null || LOCAL_RUN_DIR="$(mktemp -d /tmp/hyggshi-ota.XXXXXX 2>/dev/null || echo "/tmp")"
 
 # ANSI Terminal Colors
 BOLD='\033[1m'
@@ -223,20 +236,84 @@ get_current_info() {
 }
 
 # Fetch resources (supports HTTP/HTTPS URLs, file:///, or local directories)
+# Falls back: curl -> wget -> python3 urllib
+FETCH_LAST_ERROR=""
+
 fetch_resource() {
     local rel_path="$1"
     local output_path="$2"
+    FETCH_LAST_ERROR=""
 
     if [[ "$OTA_REPO_URL" =~ ^file:// ]]; then
         local local_base="${OTA_REPO_URL#file://}"
-        cp -f "$local_base/$rel_path" "$output_path"
+        if [ -f "$local_base/$rel_path" ]; then
+            cp -f "$local_base/$rel_path" "$output_path" 2>/dev/null && [ -s "$output_path" ] && return 0
+        fi
+        FETCH_LAST_ERROR="File not found in local repo: $local_base/$rel_path"
+        return 1
     elif [[ -d "$OTA_REPO_URL" ]]; then
-        cp -f "$OTA_REPO_URL/$rel_path" "$output_path"
+        if [ -f "$OTA_REPO_URL/$rel_path" ]; then
+            cp -f "$OTA_REPO_URL/$rel_path" "$output_path" 2>/dev/null && [ -s "$output_path" ] && return 0
+        fi
+        FETCH_LAST_ERROR="File not found in local directory: $OTA_REPO_URL/$rel_path"
+        return 1
     else
         local full_url="${OTA_REPO_URL%/}/$rel_path"
-        curl -fsSL "$full_url" -o "$output_path"
+        mkdir -p "$(dirname "$output_path")" 2>/dev/null || true
+
+        # If output file exists but is not writable, remove it first
+        if [ -e "$output_path" ] && [ ! -w "$output_path" ]; then
+            rm -f "$output_path" 2>/dev/null || true
+        fi
+
+        # 1. Try curl first
+        if command -v curl >/dev/null 2>&1; then
+            local curl_err
+            curl_err=$(curl -fsSL --connect-timeout 15 --max-time 60 "$full_url" -o "$output_path" 2>&1)
+            local curl_rc=$?
+            if [ $curl_rc -eq 0 ] && [ -s "$output_path" ]; then
+                [ "${EUID:-$(id -u)}" -eq 0 ] && chmod 666 "$output_path" 2>/dev/null || true
+                return 0
+            fi
+            FETCH_LAST_ERROR="curl error (exit $curl_rc): $curl_err"
+        fi
+
+        # 2. Fallback: wget
+        if command -v wget >/dev/null 2>&1; then
+            local wget_err
+            wget_err=$(wget -q --timeout=30 -O "$output_path" "$full_url" 2>&1)
+            local wget_rc=$?
+            if [ $wget_rc -eq 0 ] && [ -s "$output_path" ]; then
+                [ "${EUID:-$(id -u)}" -eq 0 ] && chmod 666 "$output_path" 2>/dev/null || true
+                return 0
+            fi
+            FETCH_LAST_ERROR="wget error (exit $wget_rc): $wget_err"
+        fi
+
+        # 3. Fallback: python3 urllib
+        if command -v python3 >/dev/null 2>&1; then
+            local py_err
+            py_err=$(python3 -c "
+import urllib.request, sys
+try:
+    urllib.request.urlretrieve('$full_url', '$output_path')
+    sys.exit(0)
+except Exception as e:
+    sys.stderr.write(str(e))
+    sys.exit(1)
+" 2>&1)
+            local py_rc=$?
+            if [ $py_rc -eq 0 ] && [ -s "$output_path" ]; then
+                [ "${EUID:-$(id -u)}" -eq 0 ] && chmod 666 "$output_path" 2>/dev/null || true
+                return 0
+            fi
+            FETCH_LAST_ERROR="python3 urllib error (exit $py_rc): $py_err"
+        fi
+
+        return 1
     fi
 }
+
 
 # Semver comparison (returns 0 if v1 < v2, 1 if v1 >= v2)
 semver_is_newer() {
@@ -286,11 +363,17 @@ cmd_check() {
     get_current_info
     echo -e "🔍 Connecting to Hyggshi OTA Repo [Channel: ${YELLOW}${CHANNEL}${NC}]..."
 
-    mkdir -p "$LOCAL_RUN_DIR"
+    mkdir -p "$LOCAL_RUN_DIR" 2>/dev/null || true
     local meta_tmp="$LOCAL_RUN_DIR/channel_meta.json"
+    if [ -f "$meta_tmp" ] && [ ! -w "$meta_tmp" ]; then
+        rm -f "$meta_tmp" 2>/dev/null || meta_tmp="$LOCAL_RUN_DIR/channel_meta_${EUID:-$(id -u)}.json"
+    fi
 
-    if ! fetch_resource "metadata/${CHANNEL}.json" "$meta_tmp" 2>/dev/null; then
+    if ! fetch_resource "metadata/${CHANNEL}.json" "$meta_tmp"; then
         echo -e "${RED}❌ Failed to fetch channel metadata from: ${OTA_REPO_URL}/metadata/${CHANNEL}.json${NC}"
+        if [ -n "${FETCH_LAST_ERROR:-}" ]; then
+            echo -e "   ${YELLOW}Detail: ${FETCH_LAST_ERROR}${NC}"
+        fi
         return 1
     fi
 
@@ -324,7 +407,10 @@ cmd_check() {
         
         # Fetch release manifest for changelog
         local rel_manifest="$LOCAL_RUN_DIR/release_${LATEST_VERSION}.json"
-        if fetch_resource "releases/${LATEST_VERSION}/release.json" "$rel_manifest" 2>/dev/null; then
+        if [ -f "$rel_manifest" ] && [ ! -w "$rel_manifest" ]; then
+            rm -f "$rel_manifest" 2>/dev/null || rel_manifest="$LOCAL_RUN_DIR/release_${LATEST_VERSION}_${EUID:-$(id -u)}.json"
+        fi
+        if fetch_resource "releases/${LATEST_VERSION}/release.json" "$rel_manifest"; then
             local codename
             codename=$(json_val "codename" "$rel_manifest")
             echo -e "  • Codename: ${BOLD}${codename}${NC}"
@@ -360,11 +446,17 @@ cmd_upgrade() {
     echo -e "  • Desktop Env      : ${GREEN}${CURRENT_DE}${NC}"
     echo -e "  • Target Channel   : ${YELLOW}${CHANNEL}${NC}"
 
-    mkdir -p "$LOCAL_RUN_DIR"
+    mkdir -p "$LOCAL_RUN_DIR" 2>/dev/null || true
     local meta_tmp="$LOCAL_RUN_DIR/channel_meta.json"
+    if [ -f "$meta_tmp" ] && [ ! -w "$meta_tmp" ]; then
+        rm -f "$meta_tmp" 2>/dev/null || meta_tmp="$LOCAL_RUN_DIR/channel_meta_${EUID:-$(id -u)}.json"
+    fi
 
-    if ! fetch_resource "metadata/${CHANNEL}.json" "$meta_tmp" 2>/dev/null; then
+    if ! fetch_resource "metadata/${CHANNEL}.json" "$meta_tmp"; then
         echo -e "${RED}❌ Failed to fetch metadata from OTA repository.${NC}"
+        if [ -n "${FETCH_LAST_ERROR:-}" ]; then
+            echo -e "   ${YELLOW}Detail: ${FETCH_LAST_ERROR}${NC}"
+        fi
         exit 1
     fi
 

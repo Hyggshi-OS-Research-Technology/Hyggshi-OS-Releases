@@ -488,6 +488,13 @@ class HclParser:
                             if self.download_asset(tar_url, local_tar):
                                 print(f"      ✔ Unpacking extension sources into {self.base_dir}...")
                                 subprocess.run(["tar", "-xzf", local_tar, "-C", self.base_dir], check=False)
+                                sym_ext = os.path.join(self.base_dir, "resources", "hyggshi-extensions-welcome")
+                                target_wel = os.path.join(self.base_dir, "resources", "hyggshi-welcome")
+                                if os.path.isdir(target_wel) and not os.path.exists(sym_ext):
+                                    try:
+                                        os.symlink("hyggshi-welcome", sym_ext)
+                                    except Exception:
+                                        pass
                                 # Re-check paths after unpacking
                                 if os.path.isfile(os.path.join(self.base_dir, file_rel)):
                                     target_script = os.path.join(self.base_dir, file_rel)
