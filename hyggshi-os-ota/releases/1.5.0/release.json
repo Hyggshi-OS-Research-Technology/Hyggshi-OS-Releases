@@ -1,0 +1,26 @@
+{
+  "version": "1.5.0",
+  "codename": "Bridge and Island",
+  "release_date": "2026-08-01",
+  "min_supported_version": "1.4.1",
+  "changelog": [
+    "Updated command-line utilities including nexfetch v1.5",
+    "Added ZRAM memory optimization configuration",
+    "Prepared foundational services for Hyggshi OTA mechanism",
+    "Enhanced Hyggshi OS with new features and performance improvements",
+    "Fixed bugs and security vulnerabilities",
+    "Improved user experience and interface",
+    "Optimized system performance"
+  ],
+  "requires_reboot": false,
+  "migrations": [
+    {
+      "from": "1.4.1",
+      "script": "migrations/from-1.4.1.sh"
+    },
+    {
+      "from": "1.4.0",
+      "script": "migrations/from-1.4.1.sh"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+ID=hyggshi
+NAME="Hyggshi OS"
+PRETTY_NAME="Hyggshi OS 1.4.1 (Verdant Valley)"
+VERSION="1.4.1"
+VERSION_ID="1.4.1"
+VERSION_CODENAME="Verdant Valley"
+CHANNEL="stable"
+BUILD_ID="20260925"
+HOME_URL="https://github.com/Hyggshi-OS-Research-Technology/Hyggshi-OS-Releases"
+SUPPORT_URL="https://github.com/Hyggshi-OS-Research-Technology/Hyggshi-OS-Releases/issues"
+BUG_REPORT_URL="https://github.com/Hyggshi-OS-Research-Technology/Hyggshi-OS-Releases/issues"

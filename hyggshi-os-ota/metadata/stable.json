@@ -1,0 +1,10 @@
+{
+  "channel": "stable",
+  "latest_version": "1.4.1",
+  "min_supported_version": "1.4.0",
+  "release_date": "2026-09-24",
+  "mandatory": false,
+  "release_url": "releases/1.4.1/release.json",
+  "announcement": "Thank you to everyone who has installed Hyggshi OS. We sincerely apologize for the bugs and issues found in version 1.4.0. As Hyggshi OS is still in open beta, some issues were not identified before release. We apologize for the inconvenience. Hyggshi OS 1.4.1 improves the automatic OTA update system and fixes several Flatpak and Flathub-related issues.",
+  "warning": null
+}

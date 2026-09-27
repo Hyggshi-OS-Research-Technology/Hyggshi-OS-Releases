@@ -1,0 +1,29 @@
+{
+  "version": "1.6.0",
+  "codename": "Cosmos",
+  "release_date": "2026-09-24",
+  "min_supported_version": "1.4.1",
+  "changelog": [
+    "Integrated independent Hyggshi OS OTA system update architecture",
+    "Upgraded system utilities: nexfetch and nexcode-ide",
+    "Automated version migration scripts and pre-flight validation",
+    "Enhanced operating system performance and security hardening"
+  ],
+  "requires_reboot": true,
+  "pre_upgrade_script": "migrations/pre-upgrade.sh",
+  "post_upgrade_script": "migrations/post-upgrade.sh",
+  "migrations": [
+    {
+      "from": "1.5.0",
+      "script": "migrations/from-1.5.0.sh"
+    },
+    {
+      "from": "1.4.1",
+      "script": "migrations/from-1.4.1.sh"
+    },
+    {
+      "from": "1.6.0",
+      "script": "migrations/from-1.6.0.sh"
+    }
+  ]
+}

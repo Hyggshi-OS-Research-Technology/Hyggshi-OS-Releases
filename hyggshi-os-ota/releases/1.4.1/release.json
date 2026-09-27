@@ -1,0 +1,13 @@
+{
+  "version": "1.4.1",
+  "codename": "Verdant Valley",
+  "release_date": "2026-09-24",
+  "min_supported_version": "1.4.0",
+  "changelog": [
+    "Optimize the automatic OTA system and fix some bugs flatpack and flathub."
+  ],
+  "hcl_config": "scripts/config/config.ini",
+  "post_upgrade_script": "scripts/post-upgrade-1.4.1.sh",
+  "requires_reboot": true,
+  "migrations": []
+}

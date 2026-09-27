@@ -1,0 +1,10 @@
+[Unit]
+Description=Hyggshi OS OTA Update Check Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/hyggshi-ota check
+StandardOutput=journal
+StandardError=journal
